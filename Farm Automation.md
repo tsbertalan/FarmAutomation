@@ -68,6 +68,12 @@ And voila, I have a CSV file.
 ![telemetry_2023-04-19-16-39.csv](./Farm%20Automation.assets/telemetry_2023-04-19-16-39.csv.png)
 That was all *so* much easier than in GTAV with C++ compilation cycles and those terrible (but brilliant) ScriptHookV memory hacks to get data out and commands in.
 
-Next I'll need to
+Next I'll need to ...
+
+## TODO
 - [ ] find some additional useful data (such as pose, motor rpm, gear, torque, ...)
 - [ ] Consider using sockets or some genuine pub-sub framework instead of a CSV dump.
+- [ ] Get data
+- [ ] Train predictive ODE model
+- [ ] Do MPC and other [[tasks for BDAI jobs]]
+- [ ] Write up experiments as blog posts

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8" standalone="no" ?>
+<modDesc descVersion="30">
+    <author>Tom S. Bertalan</author>
+    <version>0.0.1</version>
+    <title>
+        <en>FS22 Telemetry</en>
+        <de>FS22 Telemetrie</de>
+    </title>
+    <description>
+        <en>Output to file and possible as a server, telemetry data about the environment selected vehicles.</en>
+        <!-- Translations below are by Github CoPilot; I don't know how good they are. -->
+        <de>Gibt Telemetriedaten über die Umgebung ausgewählter Fahrzeuge in eine Datei und möglicherweise als Server aus.</de>
+        <fr>Sortie vers un fichier et éventuellement en tant que serveur, des données de télémétrie sur l'environnement des véhicules sélectionnés.</fr>
+        <pl>Wyjście do pliku i możliwe jako serwer, dane telemetrii o środowisku wybranych pojazdów.</pl>
+        <zh>将有关所选车辆环境的遥测数据输出到文件，可能作为服务器。</zh>
+    </description>
+    <iconFilename>iconFS22Telemetry.dds</iconFilename>
+    <multiplayer supported="false" />
+    <storeItems>
+    </storeItems>
+    <!-- <actions>
+		<action name="TelemToggle" category="VEHICLE" ignoreComboMask="false" />
+    </actions> -->
+</modDesc>
