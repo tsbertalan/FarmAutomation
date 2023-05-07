@@ -1,3 +1,5 @@
+See also [[fs19 Lua scripting guide]].
+
 # Journal
 ## [[2023-04-19]]
 
@@ -71,6 +73,11 @@ That was all *so* much easier than in GTAV with C++ compilation cycles and those
 Next I'll need to ...
 
 ## TODO
+- [ ] Make a standalone Telemetry plugin.
+    - [x] Add a keyboard shortcut to toggle recording on the current vehicle
+        - Maybe I won't keep this, but being able to use some keyboard shortcuts could be very useful.
+    - [ ] Add a "specialization" for all vehicles.
+- [ ] Add a global recorder object.
 - [ ] find some additional useful data (such as pose, motor rpm, gear, torque, ...)
 - [ ] Consider using sockets or some genuine pub-sub framework instead of a CSV dump.
 - [ ] Get data
