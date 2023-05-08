@@ -249,9 +249,9 @@ class GameWatcher:
 			print("Restarted savegame.")
 
 			# Now, wait for the window to be loaded, and then push enter.
-			max_sleeps = 10
 
 			# First, wait for the window to disappear.
+			max_sleeps = 8
 			n_sleeps = 0
 			pbar = tqdm(total=max_sleeps, desc="Closing window")
 			while self.window_exists:
@@ -264,6 +264,7 @@ class GameWatcher:
 			pbar.close()
 
 			# Then, wait for the window to reappear, then get a new hwnd.
+			max_sleeps = 16
 			n_sleeps = 0
 			pbar = tqdm(total=max_sleeps, desc="Opening window")
 			while not self.window_exists:

@@ -4,7 +4,7 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build",
+            "label": "Complete",
             "type": "shell",
             "command": "C:/Users/tsbertalan/micromamba/envs/nocondapy38/python.exe manage_game.py --restart_game --clear_log",
             "group": {
@@ -18,7 +18,17 @@
             "command": "C:/Users/tsbertalan/micromamba/envs/nocondapy38/python.exe manage_game.py --skip_install --restart_game --clear_log",
             "group": {
                 "kind": "build",
-                "isDefault": true
+                "isDefault": false
             }
+        },
+        {
+            "label": "Install",
+            "type": "shell",
+            "command": "C:/Users/tsbertalan/micromamba/envs/nocondapy38/python.exe manage_game.py",
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
+        }
     ]
 }
