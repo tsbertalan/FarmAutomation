@@ -12,9 +12,6 @@
     <iconFilename>iconFS22Telemetry.dds</iconFilename>
 
     <l10n>
-        <text name="GLOBAL_TEXT_1">
-            <en>This is my global text!</en>
-        </text>
         <text name="input_TelemToggle">
             <en>Toggle Telemetry</en>
         </text>
@@ -25,35 +22,17 @@
         <sourceFile filename="scripts/AddSpecialization.lua"/>
 	</extraSourceFiles>
 
-    
-	<!--
-	l10nNameTag			- Optional 					- Make text global so we can use it on the mod. Name it like following in modDesc GLOBAL_TEXT_1, GLOBAL_TEXT_2... 
-	debug							- True / False	- Log the work flow 
-	
-	
-	- The following tags can be used multiply times -
-	
-	vehicleTypeLimit	- Optional 	- True / False 	- Limit to what vehicle type to add specialization into, True = Add to this type, False = Don't add to this type. Remove tag if not used.
-	restrictions		- Optional 	- 0 / 2 		- Specialization which we must/can't have.
-	searchWords			- Optional 	- 0 / 2			- This will search for an match for this word in the specialization name
-	
-	States
-	0 = Required specialization,  all of these must be found to pass
-	1 = Unallowed specialization, fail if any of these are found
-	2 = Allowed specialization,   if any of these are found then it will pass the checks
-	-->
 	<addSpecialization>
-		<specialization name="SampleSpecialization" className="SampleSpecialization" filename="scripts/SampleSpecialization.lua" l10nNameTag="GLOBAL_TEXT" debug="false">
-			<vehicleTypeLimit state="false" name="combineDrivable" />
-			<restrictions 	  state="0" name="drivable" />
-			<restrictions 	  state="2" name="motorized" />
-			<searchWords 	  state="1" name="fillVolume" />
+		<specialization name="TelemRecSpec" className="TelemRecSpec" filename="scripts/TelemRecSpec.lua" debug="true">
+			<restrictions state="2" name="drivable" />
 		</specialization>
 	</addSpecialization>
 
     <multiplayer supported="false" />
+
     <storeItems>
     </storeItems>
+
     <actions>
 		<action name="TelemToggle" category="VEHICLE" ignoreComboMask="false" />
     </actions>
