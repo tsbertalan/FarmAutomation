@@ -6,11 +6,19 @@
         {
             "label": "Build",
             "type": "shell",
-            "command": "C:/Users/tsbertalan/anaconda3/envs/pytorch3916/python.exe install.py",
+            "command": "C:/Users/tsbertalan/micromamba/envs/nocondapy38/python.exe manage_game.py",
             "group": {
                 "kind": "build",
                 "isDefault": true
             }
-        }
+        },
+        {
+            "label": "RestartGame",
+            "type": "shell",
+            "command": "C:/Users/tsbertalan/micromamba/envs/nocondapy38/python.exe manage_game.py --skip_install --restart_game --clear_log",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
     ]
 }
