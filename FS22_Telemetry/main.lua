@@ -28,18 +28,11 @@ end
 local function init()
 
     source(Utils.getFilename("scripts/TelemMainObj.lua", g_currentModDirectory))
-    source(Utils.getFilename("scripts/TelemetrySaverSpecialization.lua", g_currentModDirectory))
     
     telem_main = TelemetryMain.new(g_server ~= nil, g_client ~= nil)
     
     FSBaseMission.registerActionEvents = Utils.appendedFunction(FSBaseMission.registerActionEvents, registerActionEvents)
     BaseMission.unregisterActionEvents = Utils.appendedFunction(BaseMission.unregisterActionEvents, unregisterActionEvents)
-
-
-    if g_specializationManager:getSpecializationByName("TelemetrySaver") == nil then
-        -- name, className, filename, customEnvironment
-        g_specializationManager:addSpecialization("TelemetrySaver", "TelemetrySaver", Utils.getFilename("scripts/TelemetrySaverSpecialization.lua", g_currentModDirectory), nil)
-    end
 
 end
 
