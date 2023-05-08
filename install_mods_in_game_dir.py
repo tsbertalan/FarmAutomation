@@ -15,7 +15,17 @@ DESTDIR = r"C:\\Users\\tsbertalan\\Documents\\My Games\\FarmingSimulator2022\\"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def install(clear_log=True):
+def clear_log():
+	
+	# Clear the log file.
+	if clear_log:
+		logfile = os.path.join(DESTDIR, 'log.txt')
+		print("Clearing", logfile)
+		with open(logfile, 'w') as f:
+			f.write('')
+
+
+def install():
 	print("Installing...")
 	# @mkdir -p $(DESTDIR)\mods\$(MODNAME)
 	# @cp -r $(MODNAME)/* $(DESTDIR)/mods/$(MODNAME)
@@ -35,14 +45,6 @@ def install(clear_log=True):
 		
 		# Then, copy the source to the destination.
 		shutil.copytree(os.path.join(HERE, src), dst)
-
-	# Clear the log file.
-	if clear_log:
-		logfile = os.path.join(DESTDIR, 'log.txt')
-		print("Clearing", logfile)
-		with open(logfile, 'w') as f:
-			f.write('')
-
 
 def get_hwnd():
 	return win32gui.FindWindow(None, "Farming Simulator 22")
@@ -234,16 +236,9 @@ class GameWatcher:
 			# Foreground the window.
 			self.foreground()
 
-			# Open the console -- press tilde until console status is True.
-			while not self.get_status('console_prompt'):
-				self.keypress(KEYNUM_TILDE)
-				time.sleep(0.3)
+			self.open_console()
+			self.clear_opened_console()
 
-			# Push backspace a random number of times, then enter.
-			for i in range(np.random.randint(1, 10)):
-				self.keypress(win32con.VK_BACK)
-			self.keypress(win32con.VK_RETURN)
-						
 			# Type the command.
 			self.type_text(f"cpRestartSaveGame {self.savegame_id}")
 			wait_for_keypress()
@@ -293,6 +288,7 @@ class GameWatcher:
 					continue
 				elif status['start']:
 					pbar.close()
+					self.close_console()
 					print('Game is ready to start.')
 					break
 				elif n_sleeps > max_sleeps:
@@ -302,7 +298,25 @@ class GameWatcher:
 		
 			# Now, hit enter.
 			self.keypress(win32con.VK_RETURN)
-				
+
+	def open_console(self):
+		# Open the console -- press tilde until console status is True.
+		while not self.get_status('console_prompt'):
+			self.keypress(KEYNUM_TILDE)
+			time.sleep(0.3)
+
+	def clear_opened_console(self):
+		# Push backspace at least 10 times.
+		for i in range(np.random.randint(10, 30)):
+			self.keypress(win32con.VK_BACK)
+		self.keypress(win32con.VK_RETURN)
+						
+	def close_console(self):
+		# First, open it.
+		self.open_console()
+
+		# Then, close it with one additional tilde.
+		self.keypress(KEYNUM_TILDE)
 			
 def crop_to_bbox(img, bbox):
 	return img[bbox[1]:bbox[3], bbox[0]:bbox[2]]
@@ -338,11 +352,24 @@ def check_loc(img_gray, test_str, bbox, lower=True, **kw_sanitize):
 
 
 if __name__ == '__main__':
-	install()
-	game = GameWatcher()
+	import argparse
+	parser = argparse.ArgumentParser()
+	parser.add_argument('--skip_install', action='store_true')
+	parser.add_argument('--restart_game', action='store_true')
+	parser.add_argument('--clear_log', action='store_true')
+	args = parser.parse_args()
 
-	# game.make_screenshot_map(indicated_bbox=SEARCH_BBOXES['console_prompt'])
-	# game.foreground()
-	# print('Status:', game.get_status())
-	
-	game.restartSavegame()
+	if not args.skip_install:
+		install()
+
+	if args.clear_log:
+		clear_log()
+
+	if args.restart_game:
+		game = GameWatcher()
+
+		# game.make_screenshot_map(indicated_bbox=SEARCH_BBOXES['console_prompt'])
+		# game.foreground()
+		# print('Status:', game.get_status())
+		
+		game.restartSavegame()
