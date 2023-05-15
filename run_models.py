@@ -34,6 +34,23 @@ from transformers.image_processing_utils import BatchFeature
 from transformers.image_utils import valid_images, PILImageResampling
 
 
+# A context manager to be used like this:
+#  with MeasureElapsed(a_dictionary, 'passage_label'):
+#      do_something()
+#  print(a_dictionary['passage_label'], 'sec elapsed')
+class MeasureElapsed:
+    def __init__(self, dictionary, key):
+        self.dictionary = dictionary
+        self.key = key
+        self.start_time = None
+
+    def __enter__(self):
+        self.start_time = time.time()
+
+    def __exit__(self, *args):
+        self.dictionary[self.key] = time.time() - self.start_time
+
+
 def clamped_resize(image: torch.tensor, size_divisor, resample='bilinear') -> torch.tensor:
     """
     Resize the image, rounding the (height, width) dimensions down to the closest multiple of size_divisor.
@@ -429,8 +446,9 @@ class DepthGetter:
             'lake': 'water',
             'river': 'water',
         }
+        
+        self.input_scaling = 0.75
 
-        # Truck windshield:
         if vehicle_settings == 'tesla':
             self.left_fraction = 0.30500000000000005
             self.right_fraction = 0.22499999999999992
@@ -442,6 +460,7 @@ class DepthGetter:
             self.right_fraction = 0.01
             self.top_fraction = 0.13
             self.bottom_fraction = 0.22499999999999992
+            # self.input_scaling = 0.5
 
         elif vehicle_settings == 'lawnmower_maximal':
             self.left_fraction = 0.02
@@ -484,7 +503,6 @@ class DepthGetter:
         self.output_scaling = 220
         self.last_call_time = time.time()
         self.scores_available = None
-        
         
         self.report_info = OrderedDict()
         from subprocess import check_output
@@ -612,6 +630,16 @@ class DepthGetter:
         bottom = bigheight - int(self.bottom_fraction * bigheight)
         windowarr = windowarr[top:bottom, left:right]
 
+        if self.input_scaling != 1.0:
+            windowarr = windowarr.permute(2, 0, 1)
+            windowarr = torch.nn.functional.interpolate(
+                windowarr.unsqueeze(0),
+                scale_factor=self.input_scaling,
+                mode='bilinear', 
+                align_corners=False
+            ).squeeze(0)
+            windowarr = windowarr.permute(1, 2, 0)
+
         return windowarr
     
     def get_preds(self, which=('semantic',)):
@@ -625,340 +653,332 @@ class DepthGetter:
             self.report_info.pop('semantic', None)
 
 
-        tick = time.time()
-        windowarr = self.get_window()
-        self.report_info['capture'] = time.time() - tick
-        # show_debug(windowarr)
+        with MeasureElapsed(self.report_info, 'capture'):
+            windowarr = self.get_window()
+        
+        # with MeasureElapsed(self.report_info, 'copyto'):
+            height, width, channels = windowarr.shape
+            height_out, width_out = self.get_output_shape(height, width)
 
-        height, width, channels = windowarr.shape
-        height_out, width_out = self.get_output_shape(height, width)
+            # # Show the framegrab.
+            # cv2.imshow('frame', windowarr)
+            # cv2.waitKey(0)
 
-        # # Show the framegrab.
-        # cv2.imshow('frame', windowarr)
-        # cv2.waitKey(0)
+            # It wants the shape to be batch_size, num_channel, height, width.
+            # inp = windowarr.transpose(2, 0, 1).reshape(1, 3, height, width)
+            if isinstance(windowarr, np.ndarray):
+                inp = torch.from_numpy(windowarr).permute(2, 0, 1).unsqueeze(0)
+            else:
+                # Put channel dimension first, and add batch dimension before that.
+                inp = windowarr.permute(2, 0, 1).unsqueeze(0)
 
-        # It wants the shape to be batch_size, num_channel, height, width.
-        # inp = windowarr.transpose(2, 0, 1).reshape(1, 3, height, width)
-        if isinstance(windowarr, np.ndarray):
-            inp = torch.from_numpy(windowarr).permute(2, 0, 1).unsqueeze(0)
-        else:
-            # Put channel dimension first, and add batch dimension before that.
-            inp = windowarr.permute(2, 0, 1).unsqueeze(0)
+                # # Put the models on the same device as the input.
+                # self.depther.model = self.depther.model.to(inp.device)
+                # self.segmenter.model = self.segmenter.model.to(inp.device)
 
-            # # Put the models on the same device as the input.
-            # self.depther.model = self.depther.model.to(inp.device)
-            # self.segmenter.model = self.segmenter.model.to(inp.device)
-
-        # Make sure it's on the right device.
-        inp = inp.to(self.depther_kw['device'])
+            # Make sure it's on the right device.
+            inp = inp.to(self.depther_kw['device'])
+        self.t_capture = self.report_info['capture']
 
 
         out = {}
 
-        self.t_capture = time.time() - tick
-
         if 'depth' in which:
-            # Evaluate the depth model on the framegrab.
-            # # Convert to torch tensor.
-            # inp = torch.from_numpy(inp)
-            tick = time.time()
-            # No gradients:
-            with torch.no_grad():
-                depth_features = self.depth_feature_extractor(inp)
-                depth_info = self.depther(**depth_features)
-            self.report_info['depth'] = time.time() - tick
-            # print(depth_info['depth'].shape)
+            with MeasureElapsed(self.report_info, 'depth'):
+                # Evaluate the depth model on the framegrab.
+                # # Convert to torch tensor.
+                # inp = torch.from_numpy(inp)
+                tick = time.time()
+                # No gradients:
+                with torch.no_grad():
+                    depth_features = self.depth_feature_extractor(inp)
+                    depth_info = self.depther(**depth_features)
+            
+            with MeasureElapsed(self.report_info, 'depth_annotations'):
 
-            tick = time.time()
+                # This is a tensor (1, height, width) with the depth in meters, float32.
+                depth_m_t = depth_info['predicted_depth']
 
-            # This is a tensor (1, height, width) with the depth in meters, float32.
-            depth_m_t = depth_info['predicted_depth']
+                # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
+                depth_m = torch.nn.functional.interpolate(
+                    depth_m_t.unsqueeze(0), size=(height_out, width_out), mode='bilinear', align_corners=False
+                ).to('cpu').numpy().squeeze()
 
-            # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
-            depth_m = torch.nn.functional.interpolate(
-                depth_m_t.unsqueeze(0), size=(height_out, width_out), mode='bilinear', align_corners=False
-            ).to('cpu').numpy().squeeze()
+                # import matplotlib.pyplot as plt
+                # fig, ax = plt.subplots()
+                # fig.colorbar(
+                #     plt.imshow(depth_m.squeeze(), cmap='winter', origin='upper',
+                #         aspect='equal', extent=[0,  depth_m.shape[1], depth_m.shape[0], 0]), # l, r, b, t
+                #     ax=ax,
+                #     label='Depth [m]',
+                # )
+                # # ax.set_xticks([])
+                # # ax.set_yticks([])
+                # fig.tight_layout()
+                # depth_model_id = self.depther_kw['model'].replace('/', '_').replace('\\', '_').replace(':', '_')
+                # fig.savefig(f'depth_{depth_model_id}.png', dpi=300)
+                # plt.show()
+                # plt.close(fig)
 
-            # import matplotlib.pyplot as plt
-            # fig, ax = plt.subplots()
-            # fig.colorbar(
-            #     plt.imshow(depth_m.squeeze(), cmap='winter', origin='upper',
-            #         aspect='equal', extent=[0,  depth_m.shape[1], depth_m.shape[0], 0]), # l, r, b, t
-            #     ax=ax,
-            #     label='Depth [m]',
-            # )
-            # # ax.set_xticks([])
-            # # ax.set_yticks([])
-            # fig.tight_layout()
-            # depth_model_id = self.depther_kw['model'].replace('/', '_').replace('\\', '_').replace(':', '_')
-            # fig.savefig(f'depth_{depth_model_id}.png', dpi=300)
-            # plt.show()
-            # plt.close(fig)
+                # Scale the max to 255 and min to 0,
+                # and make it uint8.
+                depth_m_u8 = depth_m - depth_m.min()
+                depth_m_u8 = depth_m_u8 / depth_m_u8.max()
+                depth_m_u8 = depth_m_u8 * 255
+                depth_m_u8 = depth_m_u8.astype('uint8').squeeze()
 
-            # Scale the max to 255 and min to 0,
-            # and make it uint8.
-            depth_m_u8 = depth_m - depth_m.min()
-            depth_m_u8 = depth_m_u8 / depth_m_u8.max()
-            depth_m_u8 = depth_m_u8 * 255
-            depth_m_u8 = depth_m_u8.astype('uint8').squeeze()
+                # Make it 3-channel, from one color to another
+                depth_m_u8 = np.stack([
+                    np.zeros_like(depth_m_u8),
+                    255-depth_m_u8,
+                    depth_m_u8,
+                ], axis=2)
 
-            # Make it 3-channel, from one color to another
-            depth_m_u8 = np.stack([
-                np.zeros_like(depth_m_u8),
-                255-depth_m_u8,
-                depth_m_u8,
-            ], axis=2)
+                furthest = depth_m.max()
+                closest = depth_m.min()
+                span = furthest - closest
+                if span > 0:
+                    qA = closest + 0.001 * span
+                    qB = closest + 0.999 * span
+                    # Find two places closest to the 10th and 90th quantiles of the depth, for labeling purposes.
+                    near_Apct_i = np.argmin(np.abs(depth_m.flat - qA))
+                    near_Bpct_i = np.argmin(np.abs(depth_m.flat - qB))
 
-            furthest = depth_m.max()
-            closest = depth_m.min()
-            span = furthest - closest
-            if span > 0:
-                qA = closest + 0.001 * span
-                qB = closest + 0.999 * span
-                # Find two places closest to the 10th and 90th quantiles of the depth, for labeling purposes.
-                near_Apct_i = np.argmin(np.abs(depth_m.flat - qA))
-                near_Bpct_i = np.argmin(np.abs(depth_m.flat - qB))
+                    # Replace qA and qB with the values at those places.
+                    # print('Quantile A target is', qA, 'meters')
+                    # print('Quantile B target is', qB, 'meters')
+                    qA = depth_m.flat[near_Apct_i]
+                    qB = depth_m.flat[near_Bpct_i]
+                    # print('Quantile A is', qA, 'meters')
+                    # print('Quantile B is', qB, 'meters')
+                    
+                    # Convert flat index into (r, c) -- get quotient and modulus.
+                    rows, cols = depth_m_u8.shape[:2]
+                    _rowsm, colsm = depth_m.shape[:2]
+                    # rowApred, colApred = near_Apct_i // colsm, near_Apct_i % colsm
+                    # rowBpred, colBpred = near_Bpct_i // colsm, near_Bpct_i % colsm
+                    rowApred, colApred = np.unravel_index(near_Apct_i, depth_m.squeeze().shape)
+                    rowBpred, colBpred = np.unravel_index(near_Bpct_i, depth_m.squeeze().shape)
+                    margin_r = 15
+                    margin_c = 60
+                    addmargin = lambda cr: (max(margin_c, min(cols-margin_c, cr[0])), max(margin_r, min(rows-margin_r, cr[1])))
 
-                # Replace qA and qB with the values at those places.
-                # print('Quantile A target is', qA, 'meters')
-                # print('Quantile B target is', qB, 'meters')
-                qA = depth_m.flat[near_Apct_i]
-                qB = depth_m.flat[near_Bpct_i]
-                # print('Quantile A is', qA, 'meters')
-                # print('Quantile B is', qB, 'meters')
-                
-                # Convert flat index into (r, c) -- get quotient and modulus.
-                rows, cols = depth_m_u8.shape[:2]
-                _rowsm, colsm = depth_m.shape[:2]
-                # rowApred, colApred = near_Apct_i // colsm, near_Apct_i % colsm
-                # rowBpred, colBpred = near_Bpct_i // colsm, near_Bpct_i % colsm
-                rowApred, colApred = np.unravel_index(near_Apct_i, depth_m.squeeze().shape)
-                rowBpred, colBpred = np.unravel_index(near_Bpct_i, depth_m.squeeze().shape)
-                margin_r = 15
-                margin_c = 60
-                addmargin = lambda cr: (max(margin_c, min(cols-margin_c, cr[0])), max(margin_r, min(rows-margin_r, cr[1])))
+                    def pred_coords_to_img_coords(col_row):
+                        col, row = col_row
+                        # the two images are not the same shape.
+                        # Assume one is a scaled version of the other?
+                        pred_rows, pred_cols = depth_m.squeeze().shape[:2]
+                        img_rows, img_cols = depth_m_u8.squeeze().shape[:2]
+                        # Got to floaty coordinates, and then back to inty.
+                        # print(f'{col} * {img_cols} / {pred_cols} = {col*img_cols/pred_cols}')
+                        # print(f'{row} * {img_rows} / {pred_rows} = {row*img_rows/pred_rows}')
+                        return int(col * img_cols / pred_cols), int(row * img_rows / pred_rows)
+                        # Alternately, maybe one is a cropped version of the other (due to edge padding of a FCN).
+                    color = (
+                        0,
+                        0,
+                        255,
+                    )
+                    # cv2.circle(depth_m_u8, pred_coords_to_img_coords((col, row)), 3, color, 1)
+                    # no, a MARKER_CROSS instead
+                    c, r = pred_coords_to_img_coords((colApred, rowApred))
+                    # print('Convert pred coords', (colApred, rowApred), 'to img coords', (c, r), 'for depth', qA, 'meters')
+                    cv2.drawMarker(depth_m_u8, (c, r), color, cv2.MARKER_CROSS, 10, 2)
+                    c, r = addmargin((c, r))
+                    cv2.putText(depth_m_u8, f'{qA:.2f} m', (c, r), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-                def pred_coords_to_img_coords(col_row):
-                    col, row = col_row
-                    # the two images are not the same shape.
-                    # Assume one is a scaled version of the other?
-                    pred_rows, pred_cols = depth_m.squeeze().shape[:2]
-                    img_rows, img_cols = depth_m_u8.squeeze().shape[:2]
-                    # Got to floaty coordinates, and then back to inty.
-                    # print(f'{col} * {img_cols} / {pred_cols} = {col*img_cols/pred_cols}')
-                    # print(f'{row} * {img_rows} / {pred_rows} = {row*img_rows/pred_rows}')
-                    return int(col * img_cols / pred_cols), int(row * img_rows / pred_rows)
-                    # Alternately, maybe one is a cropped version of the other (due to edge padding of a FCN).
-                color = (
-                    0,
-                    0,
-                    255,
-                )
-                # cv2.circle(depth_m_u8, pred_coords_to_img_coords((col, row)), 3, color, 1)
-                # no, a MARKER_CROSS instead
-                c, r = pred_coords_to_img_coords((colApred, rowApred))
-                # print('Convert pred coords', (colApred, rowApred), 'to img coords', (c, r), 'for depth', qA, 'meters')
-                cv2.drawMarker(depth_m_u8, (c, r), color, cv2.MARKER_CROSS, 10, 2)
-                c, r = addmargin((c, r))
-                cv2.putText(depth_m_u8, f'{qA:.2f} m', (c, r), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    # Draw a fat white cross at 10, 100
+                    cv2.drawMarker(depth_m_u8, (10, 100), (255, 255, 255), cv2.MARKER_CROSS, 10, 4)
+                    
 
-                # Draw a fat white cross at 10, 100
-                cv2.drawMarker(depth_m_u8, (10, 100), (255, 255, 255), cv2.MARKER_CROSS, 10, 4)
-                
+                    color = (
+                        0,
+                        255,
+                        0,
+                    )
+                    c, r = pred_coords_to_img_coords((colBpred, rowBpred))
+                    # print('Convert pred coords', (colBpred, rowBpred), 'to img coords', (c, r), 'for depth', qB, 'meters')
+                    cv2.drawMarker(depth_m_u8, (c, r), color, cv2.MARKER_CROSS, 10, 2)
+                    c, r = addmargin((c, r))
+                    cv2.putText(depth_m_u8, f'{qB:.2f} m', (c, r), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-                color = (
-                    0,
-                    255,
-                    0,
-                )
-                c, r = pred_coords_to_img_coords((colBpred, rowBpred))
-                # print('Convert pred coords', (colBpred, rowBpred), 'to img coords', (c, r), 'for depth', qB, 'meters')
-                cv2.drawMarker(depth_m_u8, (c, r), color, cv2.MARKER_CROSS, 10, 2)
-                c, r = addmargin((c, r))
-                cv2.putText(depth_m_u8, f'{qB:.2f} m', (c, r), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
-            out['depth'] = depth_m_u8
-            self.report_info['depth_annotations'] = time.time() - tick
+                out['depth'] = depth_m_u8
 
         if 'semantic' in which:
-            tick = time.time()
-            with torch.no_grad():
-                sem_features = self.segmenter_feature_extractor(inp)
-                semantic_info_cuda = self.segmenter(**sem_features)
-            logits = semantic_info_cuda['logits']
-            self.report_info['semantic'] = time.time() - tick
+            with MeasureElapsed(self.report_info, 'semantic'):
+                with torch.no_grad():
+                    sem_features = self.segmenter_feature_extractor(inp)
+                    semantic_info_cuda = self.segmenter(**sem_features)
+                logits = semantic_info_cuda['logits']
 
             # Get the semantic segmentation annotations.
-            tick = time.time()
+            with MeasureElapsed(self.report_info, 'semantic_annotations'):
 
-            # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
-            # upsampled_logits = torch.nn.functional.interpolate(logits, size=(height_out, width_out), mode="bilinear", align_corners=False)
+                # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
+                # upsampled_logits = torch.nn.functional.interpolate(logits, size=(height_out, width_out), mode="bilinear", align_corners=False)
 
-            # pred_seg = torch.argmax(upsampled_logits, dim=1).squeeze(0).detach().cpu().numpy()
+                # pred_seg = torch.argmax(upsampled_logits, dim=1).squeeze(0).detach().cpu().numpy()
 
-            # inp_pil = Image.fromarray(inp.detach().cpu().numpy().squeeze(0).transpose(1, 2, 0).astype('uint8'))
-            # pipe_out = self.segmenter_pipeline(inp_pil)
+                # inp_pil = Image.fromarray(inp.detach().cpu().numpy().squeeze(0).transpose(1, 2, 0).astype('uint8'))
+                # pipe_out = self.segmenter_pipeline(inp_pil)
 
-            if self.semantic_annotation_method == 'fast':
-                semantic = logits.argmax(dim=1).squeeze(0).detach().cpu().numpy()
-                # Apply a colormap with vmin=0 vmax=150
-                # Scale the 0-150 to 0-255.
-                nclasses = 150
-                semantic = (255 * semantic / nclasses).astype('uint8')
-                semantic = cv2.applyColorMap(semantic, cv2.COLORMAP_TURBO)
-            else:
-                from transformers.utils.generic import ModelOutput
-                # First dim of logits needs to match len(target_size) (both 1).
-                assert logits.shape[0] == 1
-                model_outputs = ModelOutput(logits=logits.to('cpu'), target_size=[(height_out, width_out)],)
-                semantic_info = self.segmenter_pipeline.postprocess(model_outputs)
+                if self.semantic_annotation_method == 'fast':
+                    semantic = logits.argmax(dim=1).squeeze(0).detach().cpu().numpy()
+                    # Apply a colormap with vmin=0 vmax=150
+                    # Scale the 0-150 to 0-255.
+                    nclasses = 150
+                    semantic = (255 * semantic / nclasses).astype('uint8')
+                    semantic = cv2.applyColorMap(semantic, cv2.COLORMAP_TURBO)
+                else:
+                    from transformers.utils.generic import ModelOutput
+                    # First dim of logits needs to match len(target_size) (both 1).
+                    assert logits.shape[0] == 1
+                    model_outputs = ModelOutput(logits=logits.to('cpu'), target_size=[(height_out, width_out)],)
+                    semantic_info = self.segmenter_pipeline.postprocess(model_outputs)
 
 
-                semantic = np.zeros((height_out, width_out, 3), dtype='uint8')
+                    semantic = np.zeros((height_out, width_out, 3), dtype='uint8')
 
-                # Merge synonyms.
-                canonicalize = lambda label: self.class_synonyms.get(label, label)
+                    # Merge synonyms.
+                    canonicalize = lambda label: self.class_synonyms.get(label, label)
 
-                merged = {}
-                for key in set([
-                    canonicalize(item['label'])
-                    for item in semantic_info
-                    ]):
-                    # get all the items with this label.
-                    items = [item for item in semantic_info if canonicalize(item['label']) == key]
-                    sz = None if items[0]['score'] is None else np.zeros_like(items[0]['score'])
-                    merged_item = {
-                        'score': sz,
-                        'label': key,
-                        'mask': np.zeros_like(items[0]['mask']),
-                    }
-                    for item in items:
-                        if sz is not None:
-                            merged_item['score'][item['mask']] = item['score'][item['mask']]
-                        merged_item['mask'][np.asarray(item['mask'], dtype='bool')] = 1
-                    merged_item['mask'] = Image.fromarray(merged_item['mask'])
-                    merged[key] = merged_item
-                original_semantic_info = semantic_info
-                semantic_info = list(merged.values())
+                    merged = {}
+                    for key in set([
+                        canonicalize(item['label'])
+                        for item in semantic_info
+                        ]):
+                        # get all the items with this label.
+                        items = [item for item in semantic_info if canonicalize(item['label']) == key]
+                        sz = None if items[0]['score'] is None else np.zeros_like(items[0]['score'])
+                        merged_item = {
+                            'score': sz,
+                            'label': key,
+                            'mask': np.zeros_like(items[0]['mask']),
+                        }
+                        for item in items:
+                            if sz is not None:
+                                merged_item['score'][item['mask']] = item['score'][item['mask']]
+                            merged_item['mask'][np.asarray(item['mask'], dtype='bool')] = 1
+                        merged_item['mask'] = Image.fromarray(merged_item['mask'])
+                        merged[key] = merged_item
+                    original_semantic_info = semantic_info
+                    semantic_info = list(merged.values())
 
-                # For each class...
-                for item in semantic_info:
-                    # if we haven't seen it before, assign it a random color.
-                    class_label = item['label']
-                    if class_label not in self.class_colors:
-                        self.class_colors[class_label] = np.random.randint(0, 255, size=3, dtype='uint8')
-                
-                    # Then, fill in the masked areas with that color.
-                    rows, cols = rows_cols = np.argwhere(item['mask']).T
-                    color = np.asarray(self.class_colors[class_label])
-                    # Scale the color by the logconfidence.
-                    sc = item['score']
-                    if sc is None:
-                        if self.scores_available is None:
-                            # Haven't talked about it yet.
-                            print('No scores available.')
-                        self.scores_available = False
-                        sc = 0.9
-                    else:
-                        self.scores_available = True
-                    logscore = max(np.log(1. - sc), -10)  # from 0 to -10, with -10 being most confident.
-                    item['lightness'] = lightness = 1.0 if not self.scores_available else (-logscore/10.) # now from 0 to 1, with 1 being most confident.
-                    confident_color = (color * lightness).astype('uint8')
-                    semantic[rows, cols, :] = confident_color
+                    # For each class...
+                    for item in semantic_info:
+                        # if we haven't seen it before, assign it a random color.
+                        class_label = item['label']
+                        if class_label not in self.class_colors:
+                            self.class_colors[class_label] = np.random.randint(0, 255, size=3, dtype='uint8')
+                    
+                        # Then, fill in the masked areas with that color.
+                        rows, cols = rows_cols = np.argwhere(item['mask']).T
+                        color = np.asarray(self.class_colors[class_label])
+                        # Scale the color by the logconfidence.
+                        sc = item['score']
+                        if sc is None:
+                            if self.scores_available is None:
+                                # Haven't talked about it yet.
+                                print('No scores available.')
+                            self.scores_available = False
+                            sc = 0.9
+                        else:
+                            self.scores_available = True
+                        logscore = max(np.log(1. - sc), -10)  # from 0 to -10, with -10 being most confident.
+                        item['lightness'] = lightness = 1.0 if not self.scores_available else (-logscore/10.) # now from 0 to 1, with 1 being most confident.
+                        confident_color = (color * lightness).astype('uint8')
+                        semantic[rows, cols, :] = confident_color
 
-                    # Point closest to the centroid.
-                    centroid_r = np.mean(rows).astype('int')
-                    centroid_c = np.mean(cols).astype('int')
-                    iclosest = np.argmin(np.linalg.norm(rows_cols.T - np.array([centroid_r, centroid_c]), axis=1))
-                    item['centroid'] = rows[iclosest], cols[iclosest]
+                        # Point closest to the centroid.
+                        centroid_r = np.mean(rows).astype('int')
+                        centroid_c = np.mean(cols).astype('int')
+                        iclosest = np.argmin(np.linalg.norm(rows_cols.T - np.array([centroid_r, centroid_c]), axis=1))
+                        item['centroid'] = rows[iclosest], cols[iclosest]
 
-                    uint8 = lambda f: int(0 if f < 0 else (255 if f > 255 else f))
-                    item['confident_label_color'] = (uint8(255 * lightness), uint8(255 * lightness), uint8(255 * lightness))
+                        uint8 = lambda f: int(0 if f < 0 else (255 if f > 255 else f))
+                        item['confident_label_color'] = (uint8(255 * lightness), uint8(255 * lightness), uint8(255 * lightness))
 
-                # Loop again to draw the labels on top.
-                for item in semantic_info:
-                    rowApred, colApred = item['centroid']
-                    light = item['lightness']
-                    confident_label_color = item['confident_label_color']
-                    cv2.putText(
-                        semantic, 
-                        item['label'], 
-                        (colApred, rowApred), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 
-                        0.5, # font size
-                        confident_label_color,  # color
-                        1 if not self.scores_available else (2 if light > 0.9 else 1) # thickness
-                    )
+                    # Loop again to draw the labels on top.
+                    for item in semantic_info:
+                        rowApred, colApred = item['centroid']
+                        light = item['lightness']
+                        confident_label_color = item['confident_label_color']
+                        cv2.putText(
+                            semantic, 
+                            item['label'], 
+                            (colApred, rowApred), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 
+                            0.5, # font size
+                            confident_label_color,  # color
+                            1 if not self.scores_available else (2 if light > 0.9 else 1) # thickness
+                        )
 
-            semantic = cv2.cvtColor(semantic, cv2.COLOR_RGB2BGR)
+                semantic = cv2.cvtColor(semantic, cv2.COLOR_RGB2BGR)
 
-            out['semantic'] = semantic
-            self.report_info['semantic_annotations'] = time.time() - tick
+                out['semantic'] = semantic
             
         # Scale down the outputs.
-        tick = time.time()
-        # Optionally scale down the output baseimage.
-        if self.output_scaling == 1:
-            scaled_input = numpicize(windowarr)
-        else:
-            def rescale(arr):
-                arr_in = arr
-                if isinstance(arr, np.ndarray):
-                    return cv2.resize(np.asarray(arr), (width_out, height_out), interpolation=cv2.INTER_LINEAR)
-                else:
-                    assert isinstance(arr, torch.Tensor)
-                    # Add batch dim if needed.
-                    if len(arr.shape) == 3:
-                        arr = arr.unsqueeze(0)
+        with MeasureElapsed(self.report_info, 'annotation_scaling'):
+            # Optionally scale down the output baseimage.
+            if self.output_scaling == 1:
+                scaled_input = numpicize(windowarr)
+            else:
+                def rescale(arr):
+                    arr_in = arr
+                    if isinstance(arr, np.ndarray):
+                        return cv2.resize(np.asarray(arr), (width_out, height_out), interpolation=cv2.INTER_LINEAR)
+                    else:
+                        assert isinstance(arr, torch.Tensor)
+                        # Add batch dim if needed.
+                        if len(arr.shape) == 3:
+                            arr = arr.unsqueeze(0)
 
-                    # Put channel dim first.
-                    arr = arr.permute(0, 3, 1, 2)
+                        # Put channel dim first.
+                        arr = arr.permute(0, 3, 1, 2)
 
-                    # Scale.
-                    arr = torch.nn.functional.interpolate(arr, size=(height_out, width_out), mode='bilinear', align_corners=False)
+                        # Scale.
+                        arr = torch.nn.functional.interpolate(arr, size=(height_out, width_out), mode='bilinear', align_corners=False)
 
-                    # Put channel dim last.
-                    arr = arr.permute(0, 2, 3, 1)
+                        # Put channel dim last.
+                        arr = arr.permute(0, 2, 3, 1)
 
-                    # Remove batch dim if needed.
-                    if len(arr_in.shape) == 3:
-                        arr = arr.squeeze(0)
+                        # Remove batch dim if needed.
+                        if len(arr_in.shape) == 3:
+                            arr = arr.squeeze(0)
 
-                    return arr
-
-
-                
-            scaled_input = numpicize(rescale(windowarr))
-            for key in which:
-                out[key] = rescale(out[key])
-        self.report_info['annotation_scaling'] = time.time() - tick
+                        return arr
+                    
+                scaled_input = numpicize(rescale(windowarr))
+                for key in which:
+                    out[key] = rescale(out[key])
 
         # Write time-since-last to the framegrab.
-        out_to_display = scaled_input.copy()
-        row_offset = 19
-        for class_label, elapsed_str in self.report_info.items():
-            col_row = (10, row_offset)
-            row_offset += 20
-            if not isinstance(elapsed_str, str):
-                elapsed_str = f'{elapsed_str:.2f} s'
-            font_scale = 0.4
-            if class_label in ('depth_model', 'segmentation_model'):
-                font_scale = 0.3
-            # Argument order for putText is (image, text, org, fontFace, fontScale, color, thickness=None, lineType=None, bottomLeftOrigin=None)
-            cv2.putText(out_to_display, f'{class_label}: {elapsed_str}', col_row, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1)
+        with MeasureElapsed(self.report_info, 'write_elapsed'):
+            out_to_display = scaled_input.copy()
+            row_offset = 19
+            for class_label, elapsed_str in self.report_info.items():
+                col_row = (10, row_offset)
+                row_offset += 20
+                if not isinstance(elapsed_str, str):
+                    elapsed_str = f'{elapsed_str:.3f} s'
+                font_scale = 0.4
+                if class_label in ('depth_model', 'segmentation_model'):
+                    font_scale = 0.3
+                # Argument order for putText is (image, text, org, fontFace, fontScale, color, thickness=None, lineType=None, bottomLeftOrigin=None)
+                cv2.putText(out_to_display, f'{class_label}: {elapsed_str}', col_row, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1)
 
-        out['input'] = out_to_display
+            out['input'] = out_to_display
 
-        # Mix the annotated into the original at a reduced alpha.
-        for key in out:
-            alpha = {
-                'input': self.input_alpha,
-                'depth': self.depth_alpha,
-                'semantic': self.semantic_alpha,
-            }.get(key, 0.5)
-            A = out[key]
-            B = scaled_input# if key != 'input' else numpicize(windowarr)
-            out[key] = cv2.addWeighted(A, alpha, B, 1 - alpha, 0)
+            # Mix the annotated into the original at a reduced alpha.
+            for key in out:
+                alpha = {
+                    'input': self.input_alpha,
+                    'depth': self.depth_alpha,
+                    'semantic': self.semantic_alpha,
+                }.get(key, 0.5)
+                A = out[key]
+                B = scaled_input# if key != 'input' else numpicize(windowarr)
+                out[key] = cv2.addWeighted(A, alpha, B, 1 - alpha, 0)
 
         return out
 
@@ -968,14 +988,15 @@ class DepthGetter:
         while True:
             def break_time():
                 preds = self.get_preds(which=which)
-                for key in sorted(preds.keys()):
-                    rgb = preds[key]
-                    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                    cv2.imshow(key, bgr)
-                k = cv2.waitKey(50) & 0xFF
-                if k == ord('q'):
-                    print('Quitting.')
-                    return True
+                with MeasureElapsed(self.report_info, 'imshow'):
+                    for key in sorted(preds.keys()):
+                        rgb = preds[key]
+                        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                        cv2.imshow(key, bgr)
+                    k = cv2.waitKey(1) & 0xFF
+                    if k == ord('q'):
+                        print('Quitting.')
+                        return True
             if ignore_errors:
                 try:
                     if break_time():
@@ -997,6 +1018,7 @@ class DepthGetter:
         A|D to move right pointer,
         w|s to move top pointer,
         W|S to move bottom pointer,
+        r|f to move input scaling,
         R|F to move output scaling,
         p to print current settings.
         ''')
@@ -1008,13 +1030,24 @@ class DepthGetter:
 
                 # Convert from RGB to BGR.
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                frame_copy = frame.copy()
 
                 # Show the framegrab.
+                h, w = frame.shape[:2]
+                ddiv = self.depth_feature_extractor.size_divisor
+                hdep, wdep = max(int(h // ddiv * ddiv), ddiv), max(int(w // ddiv * ddiv), ddiv)
+                sdivh = self.segmenter_feature_extractor.size['height']
+                sdivw = self.segmenter_feature_extractor.size['width']
+                h512, w512 = max(int(h // sdivh * sdivh), sdivh), max(int(w // sdivw * sdivw), sdivw)
+                cv2.putText(frame, f'Net Input: {w}x{h}', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                cv2.putText(frame, f'{wdep}x{hdep}//{ddiv}', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                cv2.putText(frame, f'{w512}x{h512}//{sdivw}x{sdivh}', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 cv2.imshow('input', frame)
 
                 # Show the output scale
-                frame_copy = frame.copy()
                 scaled_frame = cv2.resize(frame_copy, (0, 0), fx=self.output_scaling, fy=self.output_scaling)
+                h, w = scaled_frame.shape[:2]
+                cv2.putText(scaled_frame, f'Display: {w}x{h}', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
                 # Show the output scale
                 cv2.imshow('output', scaled_frame)
@@ -1079,6 +1112,10 @@ class DepthGetter:
                 self.bottom_fraction -= 0.01
             elif k == ord('S'):
                 self.bottom_fraction += 0.01
+            elif k == ord('r'):
+                self.input_scaling -= 0.01
+            elif k == ord('f'):
+                self.input_scaling += 0.01
             elif k == ord('R'):
                 self.output_scaling -= 0.01
             elif k == ord('F'):
@@ -1088,14 +1125,16 @@ class DepthGetter:
                 print('self.right_fraction =', self.right_fraction)
                 print('self.top_fraction =', self.top_fraction)
                 print('self.bottom_fraction =', self.bottom_fraction)
+                print('self.input_scaling =', self.input_scaling)
                 print('self.output_scaling =', self.output_scaling)
 
 
-def main(do_depth=True, do_semantic=True, **kw_getter):
+def main(adjust_first=False, do_depth=True, do_semantic=True, **kw_getter):
     # Run in a loop, showing the depth each time we recompute it.
     # Stop with Ctrl-C or q
     dg = DepthGetter(**kw_getter)
-    # dg.adjust_geometry()
+    if adjust_first:
+        dg.adjust_geometry()
 
 
     which = ()
@@ -1108,7 +1147,8 @@ def main(do_depth=True, do_semantic=True, **kw_getter):
 
 if __name__ == '__main__':
     main(
-        # do_depth=False,
+        # adjust_first=True,
+        do_depth=False,
         semantic_annotation_method='fast', # full|fast
         semantic_alpha=1.0, depth_alpha=1.0,
         # vehicle_settings='lawnmower_maximal',
