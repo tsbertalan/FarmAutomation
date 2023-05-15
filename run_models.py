@@ -337,7 +337,7 @@ def numpicize(arr, copy=None):
 
 class DepthGetter:
 
-    def __init__(self, vehicle_settings='valtra8750', sshot_method='dxcam', 
+    def __init__(self, vehicle_settings='mercedes_urban_truck', sshot_method='dxcam', 
                  CUDAmodels=True, semantic_annotation_method='fast',
                  input_alpha=0.5,
                  depth_alpha=0.6,
@@ -432,10 +432,16 @@ class DepthGetter:
 
         # Truck windshield:
         if vehicle_settings == 'tesla':
-            self.left_fraction = 0.31500000000000006
-            self.right_fraction = 0.23499999999999993
-            self.top_fraction = 0.12999999999999984
+            self.left_fraction = 0.30500000000000005
+            self.right_fraction = 0.22499999999999992
+            self.top_fraction = 0.11999999999999984
             self.bottom_fraction = 0.5950000000000002
+
+        elif vehicle_settings == 'dicycle':
+            self.left_fraction = 0.01
+            self.right_fraction = 0.01
+            self.top_fraction = 0.13
+            self.bottom_fraction = 0.22499999999999992
 
         elif vehicle_settings == 'lawnmower_maximal':
             self.left_fraction = 0.02
@@ -472,15 +478,19 @@ class DepthGetter:
             assert vehicle_settings == 'mercedes_urban_truck'
             self.left_fraction = 0.3350000000000001
             self.right_fraction = 0.23499999999999993
-            self.top_fraction = 0.33
+            self.top_fraction = 0.34
             self.bottom_fraction = 0.305
             
-        self.output_scaling = 170
+        self.output_scaling = 220
         self.last_call_time = time.time()
         self.scores_available = None
         
         
-        self.time_info = OrderedDict()
+        self.report_info = OrderedDict()
+        from subprocess import check_output
+        self.report_info['git_sha'] = check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
+        self.report_info['depth_model'] = self.depther_kw['model']
+        self.report_info['segmentation_model'] = self.segmenter_kw['model']
 
         # Set up the camera
         self.sshot_method = sshot_method
@@ -606,13 +616,18 @@ class DepthGetter:
     
     def get_preds(self, which=('semantic',)):
         time_since_last = time.time() - self.last_call_time
-        self.time_info['loop'] = time_since_last
+        self.report_info['loop'] = time_since_last
         self.last_call_time = time.time()
+
+        if 'depth' not in which:
+            self.report_info.pop('depth', None)
+        if 'semantic' not in which:
+            self.report_info.pop('semantic', None)
 
 
         tick = time.time()
         windowarr = self.get_window()
-        self.time_info['capture'] = time.time() - tick
+        self.report_info['capture'] = time.time() - tick
         # show_debug(windowarr)
 
         height, width, channels = windowarr.shape
@@ -651,7 +666,7 @@ class DepthGetter:
             with torch.no_grad():
                 depth_features = self.depth_feature_extractor(inp)
                 depth_info = self.depther(**depth_features)
-            self.time_info['depth'] = time.time() - tick
+            self.report_info['depth'] = time.time() - tick
             # print(depth_info['depth'].shape)
 
             tick = time.time()
@@ -763,7 +778,7 @@ class DepthGetter:
                 cv2.putText(depth_m_u8, f'{qB:.2f} m', (c, r), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
             out['depth'] = depth_m_u8
-            self.time_info['depth_annotations'] = time.time() - tick
+            self.report_info['depth_annotations'] = time.time() - tick
 
         if 'semantic' in which:
             tick = time.time()
@@ -771,7 +786,7 @@ class DepthGetter:
                 sem_features = self.segmenter_feature_extractor(inp)
                 semantic_info_cuda = self.segmenter(**sem_features)
             logits = semantic_info_cuda['logits']
-            self.time_info['semantic'] = time.time() - tick
+            self.report_info['semantic'] = time.time() - tick
 
             # Get the semantic segmentation annotations.
             tick = time.time()
@@ -878,7 +893,7 @@ class DepthGetter:
             semantic = cv2.cvtColor(semantic, cv2.COLOR_RGB2BGR)
 
             out['semantic'] = semantic
-            self.time_info['semantic_annotations'] = time.time() - tick
+            self.report_info['semantic_annotations'] = time.time() - tick
             
         # Scale down the outputs.
         tick = time.time()
@@ -916,15 +931,21 @@ class DepthGetter:
             scaled_input = numpicize(rescale(windowarr))
             for key in which:
                 out[key] = rescale(out[key])
-        self.time_info['annotation_scaling'] = time.time() - tick
+        self.report_info['annotation_scaling'] = time.time() - tick
 
         # Write time-since-last to the framegrab.
         out_to_display = scaled_input.copy()
         row_offset = 19
-        for class_label, elapsed in self.time_info.items():
+        for class_label, elapsed_str in self.report_info.items():
             col_row = (10, row_offset)
             row_offset += 20
-            cv2.putText(out_to_display, f'{class_label}: {elapsed:.4f} s', col_row, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            if not isinstance(elapsed_str, str):
+                elapsed_str = f'{elapsed_str:.2f} s'
+            font_scale = 0.4
+            if class_label in ('depth_model', 'segmentation_model'):
+                font_scale = 0.3
+            # Argument order for putText is (image, text, org, fontFace, fontScale, color, thickness=None, lineType=None, bottomLeftOrigin=None)
+            cv2.putText(out_to_display, f'{class_label}: {elapsed_str}', col_row, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1)
 
         out['input'] = out_to_display
 
@@ -1086,4 +1107,12 @@ def main(do_depth=True, do_semantic=True, **kw_getter):
 
 
 if __name__ == '__main__':
-    main(semantic_annotation_method='fast', semantic_alpha=1.0, depth_alpha=1.0)
+    main(
+        # do_depth=False,
+        semantic_annotation_method='fast', # full|fast
+        semantic_alpha=1.0, depth_alpha=1.0,
+        # vehicle_settings='lawnmower_maximal',
+        vehicle_settings='dicycle',
+        # vehicle_settings='tesla',
+        # vehicle_settings='mercedes_urban_truck',
+        )
