@@ -959,13 +959,19 @@ class DepthGetter:
             for class_label, elapsed_str in self.report_info.items():
                 col_row = (10, row_offset)
                 row_offset += 20
+                thickness = 1
                 if not isinstance(elapsed_str, str):
-                    elapsed_str = f'{elapsed_str:.3f} s'
+                    if class_label != 'loop':
+                        class_label = f'> {class_label}'
+                        elapsed_str = f'{elapsed_str:.3f} s'
+                    else:
+                        elapsed_str = f'{elapsed_str:.3f} s ({1./elapsed_str:.1f} fps)'
+                        # thickness = 2
                 font_scale = 0.4
                 if class_label in ('depth_model', 'segmentation_model'):
                     font_scale = 0.3
                 # Argument order for putText is (image, text, org, fontFace, fontScale, color, thickness=None, lineType=None, bottomLeftOrigin=None)
-                cv2.putText(out_to_display, f'{class_label}: {elapsed_str}', col_row, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1)
+                cv2.putText(out_to_display, f'{class_label}: {elapsed_str}', col_row, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
 
             out['input'] = out_to_display
 
