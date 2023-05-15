@@ -356,7 +356,7 @@ class DepthGetter:
 
     def __init__(self, vehicle_settings='mercedes_urban_truck', sshot_method='dxcam', 
                  CUDAmodels=True, semantic_annotation_method='fast',
-                 input_alpha=0.5,
+                 input_alpha=1.0,
                  depth_alpha=0.6,
                  semantic_alpha=0.5,
                  ):
@@ -954,19 +954,23 @@ class DepthGetter:
 
         # Write time-since-last to the framegrab.
         with MeasureElapsed(self.report_info, 'write_elapsed'):
+            text_img_blur_radius = 5
             out_to_display = scaled_input.copy()
+            out_to_display = cv2.blur(out_to_display, (text_img_blur_radius, text_img_blur_radius))
             row_offset = 19
             for class_label, elapsed_str in self.report_info.items():
-                col_row = (10, row_offset)
-                row_offset += 20
-                thickness = 1
                 if not isinstance(elapsed_str, str):
+                    if elapsed_str < .003:
+                        continue
                     if class_label != 'loop':
-                        class_label = f'> {class_label}'
+                        class_label = f'| {class_label}'
                         elapsed_str = f'{elapsed_str:.3f} s'
                     else:
                         elapsed_str = f'{elapsed_str:.3f} s ({1./elapsed_str:.1f} fps)'
                         # thickness = 2
+                col_row = (10, row_offset)
+                row_offset += 20
+                thickness = 1
                 font_scale = 0.4
                 if class_label in ('depth_model', 'segmentation_model'):
                     font_scale = 0.3
@@ -1154,7 +1158,7 @@ def main(adjust_first=False, do_depth=True, do_semantic=True, **kw_getter):
 if __name__ == '__main__':
     main(
         # adjust_first=True,
-        do_depth=False,
+        # do_depth=False,
         semantic_annotation_method='fast', # full|fast
         semantic_alpha=1.0, depth_alpha=1.0,
         # vehicle_settings='lawnmower_maximal',
