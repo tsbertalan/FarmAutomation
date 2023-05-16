@@ -509,9 +509,13 @@ class DepthGetter:
         
         self.report_info = OrderedDict()
         from subprocess import check_output
-        self.report_info['git_sha'] = check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
+        sha = check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
+        msg_firstline = check_output(['git', 'log', '--format=%B', '-n', '1', sha]).decode('utf-8').strip().split('\n')[0]
+        self.report_info['Git'] = f'{sha[:10]} {msg_firstline}'
         self.report_info['depth_model'] = self.depther_kw['model']
         self.report_info['segmentation_model'] = self.segmenter_kw['model']
+        self.report_info['empty_line'] = ''
+        self.info_lines = ('Git', 'depth_model', 'segmentation_model')
 
         # Set up the camera
         self.sshot_method = sshot_method
@@ -699,17 +703,20 @@ class DepthGetter:
                         depth_info = self.depther(**depth_features)
                         # This is a tensor (1, height, width) with the depth in meters, float32.
                         depth_m_t = depth_info['predicted_depth']
-                
+                        
                 with MeasureElapsed(self.report_info, ' depth_annotations'):
                     with MeasureElapsed(self.report_info, '  depth rescale'):
                         # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
-                        depth_m = torch.nn.functional.interpolate(
+                        # TODO: If the output scaling decreases the resolution, do it before the copy to CPU.
+                        depth_m = depth_m_t.unsqueeze(0)
+                        torch.nn.functional.interpolate(
                             depth_m_t.unsqueeze(0), size=(height_out, width_out),
                             # mode='bilinear', align_corners=False,
                             mode='nearest',
                         )
 
                     with MeasureElapsed(self.report_info, '  depth CPU copy'):
+                        self.report_info['    copied depth shape'] = 'x'.join([str(int(x)) for x in depth_m.shape])
                         depth_m = depth_m.to('cpu').numpy().squeeze()
 
                     with MeasureElapsed(self.report_info, '  depth cmap'):
@@ -739,6 +746,7 @@ class DepthGetter:
                 # Get the semantic segmentation annotations.
                 with MeasureElapsed(self.report_info, ' semantic_annotations'):
                     with MeasureElapsed(self.report_info, '  sem CPU copy'):
+                        self.report_info['    copied sem shape'] = 'x'.join([str(int(x)) for x in semantic_argmax.shape])
                         semantic_argmax_cpu = semantic_argmax.squeeze(0).detach().cpu().numpy()
 
                     # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
@@ -903,10 +911,14 @@ class DepthGetter:
                 row_offset += 12
                 thickness = 1
                 font_scale = base_font_scale
-                if class_label in ('depth_model', 'segmentation_model'):
+                if class_label in self.info_lines:
                     font_scale = 0.3
-                # Argument order for putText is (image, text, org, fontFace, fontScale, color, thickness=None, lineType=None, bottomLeftOrigin=None)
-                cv2.putText(out_to_display, f'{class_label}: {elapsed_str}', col_row, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+                if class_label == 'empty_line':
+                    continue
+                else:
+                    txt = f'{class_label}: {elapsed_str}'
+                    # Argument order for putText is (image, text, org, fontFace, fontScale, color, thickness=None, lineType=None, bottomLeftOrigin=None)
+                    cv2.putText(out_to_display, txt, col_row, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
 
             out['input'] = out_to_display
 
