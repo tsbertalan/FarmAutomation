@@ -789,7 +789,7 @@ class DepthGetter:
                             # Scale the 0-150 to 0-255.
                             nclasses = 150
                             semantic = (255 * semantic / nclasses).astype('uint8')
-                            semantic = cv2.applyColorMap(semantic, cv2.COLORMAP_TURBO)
+                            semantic = cv2.applyColorMap(semantic, cv2.COLORMAP_INFERNO)
                         else:
                             from transformers.utils.generic import ModelOutput
                             # First dim of logits needs to match len(target_size) (both 1).
@@ -878,6 +878,110 @@ class DepthGetter:
 
                         out['semantic'] = semantic
             
+        if 'depth_m' in locals():
+            with MeasureElapsed(self.report_info, 'depth projection'):
+                depth_m_cpu = torch.from_numpy(depth_m) # not on gpu
+                height_depth, width_depth = semantic_argmax_cpu.shape
+                depth_m_cpu_segshape = torch.nn.functional.interpolate(
+                    depth_m_cpu.unsqueeze(0).unsqueeze(0),
+                    size=(height_depth, width_depth),
+                    mode='nearest',
+                ).squeeze().numpy()
+                # Append u,v coodinates and multiply by an inverse pinhole matrix to get x,y,z.
+                if not hasattr(self, 'pinhole_information'):
+                    self.pinhole_information = {}
+                    # Pre-populate some fixed u,v coordinates as torch cuda arrays.
+                    # These are the coordinates of the center of each pixel.
+                    # The first pixel is at the top left.
+                    # The last pixel is at the bottom right.
+                    # The u,v coordinates are in the range [0, 1].
+                    # The pinhole matrix is the inverse of the camera matrix, with intrinsics and extrinsics.
+                    focal_length = 0.1
+                    # Center in uv
+                    u0 = 0
+                    v0 = 0
+                    K = np.array([
+                        [focal_length, 0, u0],
+                        [0, focal_length, v0],
+                        [0, 0, 1],
+                    ])
+                    
+                    
+                    # cam_coords = K_inv @ pixel_coords * depth.flatten()
+
+                    # Precompute K_inv @ pixel_coords
+                    K_inv = np.linalg.inv(K)
+                    # Augment the uv with an extra row of 1s.
+                    uv = np.stack(np.meshgrid(
+                        np.linspace(0, 1, height_depth),
+                        np.linspace(0, 1, width_depth),
+                    ), axis=-1).reshape(-1, 2).T
+                    pixel_coords = np.vstack((uv, np.ones((1, uv.shape[1]))))
+                    Kinvp = (K_inv @ pixel_coords).astype('float32')
+                    # self.pinhole_information['K_inv_pixel_coords'] = torch.from_numpy(Kinvp).to(self.depther_kw['device'])
+                    self.pinhole_information['K_inv_pixel_coords'] = Kinvp
+
+
+                    # Finally, save the rotation and translation parts.
+                    # Translation of camera in 3d
+                    t1, t2, t3 = 0, 0, 0
+                    # Rotation of camera in 3d (applied after translation)
+                    rx, ry, rz = 0, 0, 0
+                    # From Euler angles to 3x3 rotation matrix
+                    R = np.array([
+                        [np.cos(rz)*np.cos(ry), np.cos(rz)*np.sin(ry)*np.sin(rx) - np.sin(rz)*np.cos(rx), np.cos(rz)*np.sin(ry)*np.cos(rx) + np.sin(rz)*np.sin(rx)],
+                        [np.sin(rz)*np.cos(ry), np.sin(rz)*np.sin(ry)*np.sin(rx) + np.cos(rz)*np.cos(rx), np.sin(rz)*np.sin(ry)*np.cos(rx) - np.cos(rz)*np.sin(rx)],
+                        [-np.sin(ry), np.cos(ry)*np.sin(rx), np.cos(ry)*np.cos(rx)],
+                    ])
+                    T = np.array([[t1, t2, t3]]).T.astype('float32')
+                    Rinv = np.linalg.inv(R).astype('float32')
+                    # self.pinhole_information['Rinv'] = torch.from_numpy(Rinv).to(self.depther_kw['device'])
+                    self.pinhole_information['Rinv'] = Rinv
+                    # self.pinhole_information['T'] = torch.from_numpy(T).to(self.depther_kw['device'])
+                    self.pinhole_information['T'] = T
+
+                # Get the 3d position.
+                # shape is [3, 282624]
+                # cam_coords = self.pinhole_information['K_inv_pixel_coords'] * depth_m_gpu.flatten()
+                cam_coords = self.pinhole_information['K_inv_pixel_coords'] * depth_m_cpu_segshape.flatten()
+                # Apply the rotation and translation.
+                xyz_untranslated = self.pinhole_information['Rinv'] @ cam_coords
+                xyz = xyz_untranslated + self.pinhole_information['T']
+
+                with MeasureElapsed(self.report_info, '  depth projection plot'):
+                    xyz_cpu = xyz#.to('cpu').numpy()
+                    # Plot the 3d points.
+                    from mpl_toolkits.mplot3d import Axes3D
+                    import matplotlib.pyplot as plt
+                    fig = plt.figure()
+                    ax = fig.add_subplot(111, projection='3d')
+                    if 'semantic_argmax_cpu' in locals():
+                        c = semantic_argmax_cpu
+                    else:
+                        c = None
+                    ax.scatter(xyz_cpu[0], xyz_cpu[1], xyz_cpu[2], s=0.01, alpha=.9,
+                               c=c, cmap='inferno', vmin=0, vmax=150
+                               )
+                    # Equal aspect ratio.
+                    ax.set_aspect('equal')
+                    # Rotate slowly in time.
+                    rotation_rate = 8
+                    angle = (time.time() * rotation_rate) % 360
+                    ax.view_init(30, angle)    
+                    ax.set_xlabel('X')
+                    ax.set_ylabel('Y')
+                    ax.set_zlabel('Z')
+                    fig.tight_layout()
+                    # Make a cv2 image out of it for consistency.
+                    fig.canvas.draw()
+                    w, h = fig.canvas.get_width_height()
+                    depth_projection = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3)
+                    plt.close(fig)
+                    # rgb -> bgr
+                    depth_projection = depth_projection[..., ::-1]
+                    out['depth_projection'] = depth_projection
+
+
         # Scale down (up?) the outputs.
         with MeasureElapsed(self.report_info, 'annotation_scaling'):
             # Optionally scale down the output baseimage.
@@ -952,6 +1056,9 @@ class DepthGetter:
 
             # Mix the annotated into the original at a reduced alpha.
             for key in out:
+                if key == 'depth_projection':
+                    # take it as is.
+                    continue
                 alpha = {
                     'input': self.input_alpha,
                     'depth': self.depth_alpha,
@@ -1130,8 +1237,8 @@ if __name__ == '__main__':
     main(
         # adjust_first=True,
         # do_depth=False,
-        # semantic_annotation_method='fast',
-        semantic_annotation_method='full',
+        semantic_annotation_method='fast',
+        # semantic_annotation_method='full',
         semantic_alpha=1.0, depth_alpha=1.0,
         # vehicle_settings='lawnmower_maximal',
         vehicle_settings='dicycle',
