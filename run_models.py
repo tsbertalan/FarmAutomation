@@ -896,10 +896,10 @@ class DepthGetter:
                     # The last pixel is at the bottom right.
                     # The u,v coordinates are in the range [0, 1].
                     # The pinhole matrix is the inverse of the camera matrix, with intrinsics and extrinsics.
-                    focal_length = 0.1
+                    focal_length = 0.6
                     # Center in uv
-                    u0 = 0
-                    v0 = 0
+                    u0 = 0.5
+                    v0 = 0.75
                     K = np.array([
                         [focal_length, 0, u0],
                         [0, focal_length, v0],
