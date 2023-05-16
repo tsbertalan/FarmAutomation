@@ -355,6 +355,55 @@ def numpicize(arr, copy=None):
     return arr
 
 
+from types import SimpleNamespace
+
+class Config(SimpleNamespace):
+
+    def __contains__(self, name):
+        return hasattr(self, name)
+
+    def get(self, name, default=None):
+        return getattr(self, name, default)
+
+    def __init__(self, file_path, **defaults):
+        super().__init__()
+        self._file_path = file_path
+        self._defaults = defaults
+        self.__dict__.update(defaults)
+        self.reload()
+
+    @property
+    def _last_loaded_contents(self):
+        if not hasattr(self, '_a_last_loaded_contents'):
+            self._a_last_loaded_contents = {}
+        return self._a_last_loaded_contents
+
+    @_last_loaded_contents.setter
+    def _last_loaded_contents(self, value):
+        self._a_last_loaded_contents = value
+
+    @property
+    def _changed(self):
+        if not hasattr(self, '_a_dirty'):
+            self._a_dirty = True
+        return self._a_dirty
+    
+    @_changed.setter
+    def _changed(self, value):
+        self._a_dirty = value
+
+    def reload(self):
+        import json
+        try:
+            with open(self._file_path, 'r') as f:
+                new_contents = json.load(f)
+                if new_contents != self._last_loaded_contents:
+                    self._changed = True
+                    self._last_loaded_contents = new_contents
+                self.__dict__.update(new_contents)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
 class DepthGetter:
 
     def __init__(self, vehicle_settings='mercedes_urban_truck', sshot_method='dxcam', 
@@ -366,6 +415,34 @@ class DepthGetter:
                  cast_before_depthcopy=False,
                  ):
         self.semantic_annotation_method = semantic_annotation_method
+
+        import os
+        HERE = os.path.dirname(__file__)
+        self.config_cam = Config(
+            os.path.join(HERE, 'config_cam.json'),
+            depth_scale=1.0,
+            depth_bias=0,
+            sensor_dims=[0.4, 0.6],
+            FoVs=[1.047, 1.047],
+            camera_center=[0.5, 0.5],
+            camera_rotation_over_pi=[0, -0.7, 0.5],
+            camera_translation=[0, 0, 0.5],
+        )
+        self.config_vis = Config(
+            os.path.join(HERE, 'config_vis.json'),
+            plot_cmap="gist_rainbow_r",
+            plot_vmin=0.0,
+            plot_vmax=16,
+            plot_rotation_rate_deg_per_sec=14,
+            plot_view_angle_deg=0,
+            plot_view_elevation_deg=90,
+            plot_xlim='flip',
+            plot_ylim='flip',
+            plot_zlim=(None, None),
+            plot_zmax=0.4,
+            plot_point_alpha=1,
+            plot_point_size=0.5,
+        )
 
         self.scale_before_cpucopy = scale_before_cpucopy
         self.cast_before_depthcopy = cast_before_depthcopy
@@ -651,16 +728,15 @@ class DepthGetter:
 
         return windowarr
     
-    def get_preds(self, which=('semantic',)):
+    def get_preds(self, which_output=('semantic',)):
         time_since_last = time.time() - self.last_call_time
         self.report_info['loop'] = time_since_last
         self.last_call_time = time.time()
 
-        if 'depth' not in which:
+        if 'depth' not in which_output:
             self.report_info.pop('depth', None)
-        if 'semantic' not in which:
+        if 'semantic' not in which_output:
             self.report_info.pop('semantic', None)
-
 
         with MeasureElapsed(self.report_info, 'capture'):
             windowarr = self.get_window()
@@ -692,22 +768,7 @@ class DepthGetter:
 
         out = {}
 
-        
-        import os, json
-        HERE = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(HERE, 'camera_intrinsics.json'), 'r') as f:
-            try:
-                new_loaded_intrinsics_file = json.load(f)
-            except json.decoder.JSONDecodeError as e:
-                print('Error loading camera_intrinsics.json:', e)
-                new_loaded_intrinsics_file = {}
-        if not hasattr(self, 'loaded_intrinsics_file'):
-            self.loaded_intrinsics_file = {}
-        remake_pinhole_information = new_loaded_intrinsics_file != self.loaded_intrinsics_file
-        self.loaded_intrinsics_file = new_loaded_intrinsics_file
-
-
-        if 'depth' in which:
+        if 'depth' in which_output:
             with MeasureElapsed(self.report_info, 'depth'):
                 with MeasureElapsed(self.report_info, ' depth net'):
                     # Evaluate the depth model on the framegrab.
@@ -720,8 +781,8 @@ class DepthGetter:
                         depth_info = self.depther(**depth_features)
                         # This is a tensor (1, height, width) with the depth in meters, float32.
                         depth_m_t = depth_info['predicted_depth']
-                        depth_m_t *= self.loaded_intrinsics_file.get('depth_scale', 1.0)
-                        depth_m_t += self.loaded_intrinsics_file.get('depth_bias', 0.0)
+                        depth_m_t *= self.config_cam.depth_scale
+                        depth_m_t += self.config_cam.depth_bias
                         
                 with MeasureElapsed(self.report_info, ' depth_annotations'):
                     with MeasureElapsed(self.report_info, '  depth rescale'):
@@ -772,7 +833,7 @@ class DepthGetter:
 
                     with MeasureElapsed(self.report_info, '  depth cmap'):
                         # Use a cv2 colormap
-                        depth_m_u8 = cv2.applyColorMap(depth_m_u8, cv2.COLORMAP_TURBO)
+                        depth_m_u8 = cv2.applyColorMap(depth_m_u8, cv2.COLORMAP_BONE)
 
                     with MeasureElapsed(self.report_info, '  depth text'):
                         color = 0,0,0
@@ -780,7 +841,7 @@ class DepthGetter:
                         cv2.putText(depth_m_u8, f'Max: {furthest:.2f} m', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                         out['depth'] = depth_m_u8
 
-        if 'semantic' in which:
+        if 'semantic' in which_output:
             with MeasureElapsed(self.report_info, 'semantic'):
                 with MeasureElapsed(self.report_info, ' semantic net'):
                     with torch.no_grad():
@@ -911,8 +972,9 @@ class DepthGetter:
                 ).squeeze().numpy()
                 # Append u,v coodinates and multiply by an inverse pinhole matrix to get x,y,z.
 
-                if remake_pinhole_information or not hasattr(self, 'pinhole_information'):
-                    if remake_pinhole_information:
+                if self.config_cam._changed or not hasattr(self, 'pinhole_information'):
+                    if self.config_cam._changed:
+                        self.config_cam._changed = False
                         print('Remaking pinhole information because camera_intrinsics.json changed.')
                     self.pinhole_information = {}
                     # Pre-populate some fixed u,v coordinates as torch cuda arrays.
@@ -924,17 +986,17 @@ class DepthGetter:
 
                     # Roughly speaking, the relationship between FoV and focal length is:
                     # FoV = 2 * arctan(0.5 * sensor_size / focal_length)
-                    if 'FoVs' in self.loaded_intrinsics_file and 'sensor_dims' in self.loaded_intrinsics_file:
-                        FoVs = self.loaded_intrinsics_file['FoVs']
-                        sensor_dims = self.loaded_intrinsics_file['sensor_dims']
+                    if 'FoVs' in self.config_cam and 'sensor_dims' in self.config_cam:
+                        FoVs = self.config_cam.FoVs
+                        sensor_dims = self.config_cam.sensor_dims
                         focal_lengths = [0.5 * sensor_dims[i] / np.tan(0.5 * FoVs[i]) for i in range(2)]
-                        if 'focal_lengths' in self.loaded_intrinsics_file:
-                            print(f'Ignoring given focal_lenghts={self.loaded_intrinsics_file["focal_lengths"]} in favor of computed focal_lengths={focal_lengths}.')
+                        if 'focal_lengths' in self.config_cam:
+                            print(f'Ignoring given focal_lenghts={self.config_cam.focal_lengths} in favor of computed focal_lengths={focal_lengths}.')
                     else:
-                        focal_lengths = self.loaded_intrinsics_file.get('focal_lengths', (1.0, 1.0))
+                        focal_lengths = self.config_cam.focal_lengths
 
                     # Center in uv
-                    u0, v0 = self.loaded_intrinsics_file.get('camera_center', (0.5, 0.5))
+                    u0, v0 = self.config_cam.camera_center
                     K = np.array([
                         [focal_lengths[0], 0, u0],
                         [0, focal_lengths[1], v0],
@@ -958,9 +1020,9 @@ class DepthGetter:
 
                     # Finally, save the rotation and translation parts.
                     # Translation of camera in 3d
-                    t1, t2, t3 = self.loaded_intrinsics_file.get('camera_translation', (0, 0, 0))
+                    t1, t2, t3 = self.config_cam.camera_translation
                     # Rotation of camera in 3d (applied after translation)
-                    rx, ry, rz = self.loaded_intrinsics_file.get('camera_rotation_over_pi', (np.pi, 0, 0))
+                    rx, ry, rz = self.config_cam.camera_rotation_over_pi
                     rx = rx * np.pi; ry = ry * np.pi; rz = rz * np.pi
                     # From Euler angles to 3x3 rotation matrix
                     R = np.array([
@@ -979,11 +1041,11 @@ class DepthGetter:
                         camera_center=(u0, v0),
                         camera_translation=(t1, t2, t3),
                         camera_rotation=(rx, ry, rz),
-                        depth_scale=self.loaded_intrinsics_file.get('depth_scale', 1.0),
-                        depth_bias=self.loaded_intrinsics_file.get('depth_bias', 0.0),
+                        depth_scale=self.config_cam.depth_scale,
+                        depth_bias=self.config_cam.depth_bias,
                     )
-                    FoVs_ = self.loaded_intrinsics_file.get('FoVs', None)
-                    sensor_dims_ = self.loaded_intrinsics_file.get('sensor_dims', None)
+                    FoVs_ = self.config_cam.FoVs
+                    sensor_dims_ = self.config_cam.sensor_dims
                     if FoVs_ is not None and sensor_dims_ is not None:
                         self.pinhole_information['inferred_params'].update(dict(
                             FoVs=FoVs_,
@@ -1011,27 +1073,33 @@ class DepthGetter:
                         c = semantic_argmax_cpu
                     else:
                         c = None
-                    cmap = self.loaded_intrinsics_file.get('plot_cmap', 'inferno')
-                    vmin = self.loaded_intrinsics_file.get('plot_vmin', 0)
-                    vmax = self.loaded_intrinsics_file.get('plot_vmax', 150)
+                    cmap = self.config_vis.plot_cmap
+                    vmin = self.config_vis.plot_vmin
+                    vmax = self.config_vis.plot_vmax
                     x, y, z = xyz_cpu
-                    not_too_high = z <= self.loaded_intrinsics_file.get('plot_zmax', np.inf)
+                    not_too_high = z <= self.config_vis.plot_zmax
                     ok = not_too_high # We can boolean in some other conditions too here.
                     ax.scatter(x[ok], y[ok], z[ok],
-                               s=self.loaded_intrinsics_file.get('plot_point_size', 0.01),
-                               alpha=self.loaded_intrinsics_file.get('plot_point_alpha', 0.9),
+                               s=self.config_vis.plot_point_size,
+                               alpha=self.config_vis.plot_point_alpha,
                                c=c.ravel()[ok], cmap=cmap, vmin=vmin, vmax=vmax
                                )
                     # Rotate slowly in time.
-                    angle = self.loaded_intrinsics_file.get('plot_view_angle_deg', 'rotate')
+                    angle = self.config_vis.plot_view_angle_deg
                     if str(angle) == 'rotate':
-                        rotation_rate = self.loaded_intrinsics_file.get('plot_rotation_rate_deg_per_sec', 10.)
+                        rotation_rate = self.plot_rotation_rate_deg_per_sec
                         angle = (time.time() * rotation_rate) % 360
-                    elev = self.loaded_intrinsics_file.get('plot_view_elevation_deg', 30.)
+                    elev = self.config_vis.plot_view_elevation_deg
                     ax.view_init(elev, angle)
-                    ax.set_xlim(*self.loaded_intrinsics_file.get('plot_xlim', (None, None)))
-                    ax.set_ylim(*self.loaded_intrinsics_file.get('plot_ylim', (None, None)))
-                    ax.set_zlim(*self.loaded_intrinsics_file.get('plot_zlim', (None, None)))
+                    for which_ax in 'xyz':
+                        config = self.config_vis.get(f'plot_{which_ax}lim')
+                        if config is None:
+                            continue
+                        elif str(config) == 'flip':
+                            a, b = getattr(ax, f'get_{which_ax}lim')()
+                            getattr(ax, f'set_{which_ax}lim')(b, a)
+                        else:
+                            getattr(ax, f'set_{which_ax}lim')(config)
                     ax.set_xlabel('X')
                     ax.set_ylabel('Y')
                     ax.set_zlabel('Z')
@@ -1051,7 +1119,6 @@ class DepthGetter:
                     for i, (key, val) in enumerate(self.pinhole_information['inferred_params'].items()):
                         cv2.putText(depth_projection, f'{key}: {val}', (10, 60 + 20 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
                     out['depth_projection'] = depth_projection
-
 
         # Scale down (up?) the outputs.
         with MeasureElapsed(self.report_info, 'annotation_scaling'):
@@ -1088,12 +1155,15 @@ class DepthGetter:
                         return arr
                     
                 scaled_input = numpicize(rescale(windowarr))
-                for key in which:
+                for key in which_output:
                     out[key] = rescale(out[key])
 
         # Write time-since-last to the framegrab.
         with MeasureElapsed(self.report_info, 'write_elapsed'):
-            self.update_git_info()
+            self.update_git_info()    
+            self.config_cam.reload()
+            self.config_vis.reload()
+
             text_img_blur_radius = 5
             out_to_display = scaled_input.copy()
             out_to_display = cv2.blur(out_to_display, (text_img_blur_radius, text_img_blur_radius))
@@ -1147,7 +1217,7 @@ class DepthGetter:
         print('Showing predictions. Press q to stop.')
         while True:
             def break_time():
-                preds = self.get_preds(which=which)
+                preds = self.get_preds(which_output=which)
                 with MeasureElapsed(self.report_info, 'imshow'):
                     for key in sorted(preds.keys()):
                         rgb = preds[key]
