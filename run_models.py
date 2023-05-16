@@ -687,6 +687,21 @@ class DepthGetter:
 
         out = {}
 
+        
+        import os, json
+        HERE = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(HERE, 'camera_intrinsics.json'), 'r') as f:
+            try:
+                new_loaded_intrinsics_file = json.load(f)
+            except json.decoder.JSONDecodeError as e:
+                print('Error loading camera_intrinsics.json:', e)
+                new_loaded_intrinsics_file = {}
+        if not hasattr(self, 'loaded_intrinsics_file'):
+            self.loaded_intrinsics_file = {}
+        remake_pinhole_information = new_loaded_intrinsics_file != self.loaded_intrinsics_file
+        self.loaded_intrinsics_file = new_loaded_intrinsics_file
+
+
         if 'depth' in which:
             with MeasureElapsed(self.report_info, 'depth'):
                 with MeasureElapsed(self.report_info, ' depth net'):
@@ -700,6 +715,8 @@ class DepthGetter:
                         depth_info = self.depther(**depth_features)
                         # This is a tensor (1, height, width) with the depth in meters, float32.
                         depth_m_t = depth_info['predicted_depth']
+                        depth_m_t *= self.loaded_intrinsics_file.get('depth_scale', 1.0)
+                        depth_m_t += self.loaded_intrinsics_file.get('depth_bias', 0.0)
                         
                 with MeasureElapsed(self.report_info, ' depth_annotations'):
                     with MeasureElapsed(self.report_info, '  depth rescale'):
@@ -888,7 +905,10 @@ class DepthGetter:
                     mode='nearest',
                 ).squeeze().numpy()
                 # Append u,v coodinates and multiply by an inverse pinhole matrix to get x,y,z.
-                if not hasattr(self, 'pinhole_information'):
+
+                if remake_pinhole_information or not hasattr(self, 'pinhole_information'):
+                    if remake_pinhole_information:
+                        print('Remaking pinhole information because camera_intrinsics.json changed.')
                     self.pinhole_information = {}
                     # Pre-populate some fixed u,v coordinates as torch cuda arrays.
                     # These are the coordinates of the center of each pixel.
@@ -896,17 +916,26 @@ class DepthGetter:
                     # The last pixel is at the bottom right.
                     # The u,v coordinates are in the range [0, 1].
                     # The pinhole matrix is the inverse of the camera matrix, with intrinsics and extrinsics.
-                    focal_length = 0.6
+
+                    # Roughly speaking, the relationship between FoV and focal length is:
+                    # FoV = 2 * arctan(0.5 * sensor_size / focal_length)
+                    if 'FoVs' in self.loaded_intrinsics_file and 'sensor_dims' in self.loaded_intrinsics_file:
+                        FoVs = self.loaded_intrinsics_file['FoVs']
+                        sensor_dims = self.loaded_intrinsics_file['sensor_dims']
+                        focal_lengths = [0.5 * sensor_dims[i] / np.tan(0.5 * FoVs[i]) for i in range(2)]
+                        if 'focal_lengths' in self.loaded_intrinsics_file:
+                            print(f'Ignoring given focal_lenghts={self.loaded_intrinsics_file["focal_lengths"]} in favor of computed focal_lengths={focal_lengths}.')
+                    else:
+                        focal_lengths = self.loaded_intrinsics_file.get('focal_lengths', (1.0, 1.0))
+
                     # Center in uv
-                    u0 = 0.5
-                    v0 = 0.75
+                    u0, v0 = self.loaded_intrinsics_file.get('camera_center', (0.5, 0.5))
                     K = np.array([
-                        [focal_length, 0, u0],
-                        [0, focal_length, v0],
+                        [focal_lengths[0], 0, u0],
+                        [0, focal_lengths[1], v0],
                         [0, 0, 1],
                     ])
-                    
-                    
+                                        
                     # cam_coords = K_inv @ pixel_coords * depth.flatten()
 
                     # Precompute K_inv @ pixel_coords
@@ -924,9 +953,10 @@ class DepthGetter:
 
                     # Finally, save the rotation and translation parts.
                     # Translation of camera in 3d
-                    t1, t2, t3 = 0, 0, 0
+                    t1, t2, t3 = self.loaded_intrinsics_file.get('camera_translation', (0, 0, 0))
                     # Rotation of camera in 3d (applied after translation)
-                    rx, ry, rz = np.pi, 0, 0
+                    rx, ry, rz = self.loaded_intrinsics_file.get('camera_rotation_over_pi', (np.pi, 0, 0))
+                    rx = rx * np.pi; ry = ry * np.pi; rz = rz * np.pi
                     # From Euler angles to 3x3 rotation matrix
                     R = np.array([
                         [np.cos(rz)*np.cos(ry), np.cos(rz)*np.sin(ry)*np.sin(rx) - np.sin(rz)*np.cos(rx), np.cos(rz)*np.sin(ry)*np.cos(rx) + np.sin(rz)*np.sin(rx)],
@@ -939,6 +969,21 @@ class DepthGetter:
                     self.pinhole_information['Rinv'] = Rinv
                     # self.pinhole_information['T'] = torch.from_numpy(T).to(self.depther_kw['device'])
                     self.pinhole_information['T'] = T
+                    self.pinhole_information['inferred_params'] = dict(
+                        focal_lengths=focal_lengths,
+                        camera_center=(u0, v0),
+                        camera_translation=(t1, t2, t3),
+                        camera_rotation=(rx, ry, rz),
+                        depth_scale=self.loaded_intrinsics_file.get('depth_scale', 1.0),
+                        depth_bias=self.loaded_intrinsics_file.get('depth_bias', 0.0),
+                    )
+                    FoVs_ = self.loaded_intrinsics_file.get('FoVs', None)
+                    sensor_dims_ = self.loaded_intrinsics_file.get('sensor_dims', None)
+                    if FoVs_ is not None and sensor_dims_ is not None:
+                        self.pinhole_information['inferred_params'].update(dict(
+                            FoVs=FoVs_,
+                            sensor_dims=sensor_dims_,
+                        ))
 
                 # Get the 3d position.
                 # shape is [3, 282624]
@@ -955,30 +1000,47 @@ class DepthGetter:
                     import matplotlib.pyplot as plt
                     fig = plt.figure()
                     ax = fig.add_subplot(111, projection='3d')
+                    ax.set_proj_type('persp', focal_length=1.0)  # l=0.2 -> FOV = 157.4 deg
                     if 'semantic_argmax_cpu' in locals():
                         c = semantic_argmax_cpu
                     else:
                         c = None
-                    ax.scatter(xyz_cpu[0], xyz_cpu[1], xyz_cpu[2], s=0.01, alpha=.9,
-                               c=c, cmap='inferno', vmin=0, vmax=150
+                    cmap = self.loaded_intrinsics_file.get('plot_cmap', 'inferno')
+                    vmin = self.loaded_intrinsics_file.get('plot_vmin', 0)
+                    vmax = self.loaded_intrinsics_file.get('plot_vmax', 150)
+                    ax.scatter(xyz_cpu[0], xyz_cpu[1], xyz_cpu[2],
+                               s=self.loaded_intrinsics_file.get('plot_point_size', 0.01),
+                               alpha=self.loaded_intrinsics_file.get('plot_point_alpha', 0.9),
+                               c=c, cmap=cmap, vmin=vmin, vmax=vmax
                                )
-                    # Equal aspect ratio.
-                    ax.set_aspect('equal')
                     # Rotate slowly in time.
-                    rotation_rate = 8
-                    angle = (time.time() * rotation_rate) % 360
-                    ax.view_init(30, angle)    
+                    angle = self.loaded_intrinsics_file.get('plot_view_angle_deg', 'rotate')
+                    if str(angle) == 'rotate':
+                        rotation_rate = self.loaded_intrinsics_file.get('plot_rotation_rate_deg_per_sec', 10.)
+                        angle = (time.time() * rotation_rate) % 360
+                    elev = self.loaded_intrinsics_file.get('plot_view_elevation_deg', 30.)
+                    ax.view_init(elev, angle)
+                    ax.set_xlim(*self.loaded_intrinsics_file.get('plot_xlim', (None, None)))
+                    ax.set_ylim(*self.loaded_intrinsics_file.get('plot_ylim', (None, None)))
+                    ax.set_zlim(*self.loaded_intrinsics_file.get('plot_zlim', (None, None)))
                     ax.set_xlabel('X')
                     ax.set_ylabel('Y')
                     ax.set_zlabel('Z')
+                    # Equal aspect ratio.
+                    ax.set_aspect('equal')
                     fig.tight_layout()
+                    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
                     # Make a cv2 image out of it for consistency.
                     fig.canvas.draw()
                     w, h = fig.canvas.get_width_height()
                     depth_projection = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3)
                     plt.close(fig)
                     # rgb -> bgr
-                    depth_projection = depth_projection[..., ::-1]
+                    depth_projection = depth_projection[..., ::-1].copy(order='C')
+                    cv2.putText(depth_projection, f'angle: {angle:.1f} deg', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
+                    cv2.putText(depth_projection, f'elev: {elev:.1f} deg', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
+                    for i, (key, val) in enumerate(self.pinhole_information['inferred_params'].items()):
+                        cv2.putText(depth_projection, f'{key}: {val}', (10, 60 + 20 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
                     out['depth_projection'] = depth_projection
 
 
@@ -1097,7 +1159,7 @@ class DepthGetter:
             else:
                 if break_time():
                     break
-            print('Loop time:', time.time() - t_last, 's')
+            # print('Loop time:', time.time() - t_last, 's')
             t_last = time.time()
 
     def adjust_geometry(self, ignore_errors=False):
@@ -1237,8 +1299,8 @@ if __name__ == '__main__':
     main(
         # adjust_first=True,
         # do_depth=False,
-        semantic_annotation_method='fast',
-        # semantic_annotation_method='full',
+        # semantic_annotation_method='fast',
+        semantic_annotation_method='full',
         semantic_alpha=1.0, depth_alpha=1.0,
         # vehicle_settings='lawnmower_maximal',
         vehicle_settings='dicycle',
