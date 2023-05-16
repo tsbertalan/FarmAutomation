@@ -43,6 +43,9 @@ class MeasureElapsed:
         self.dictionary = dictionary
         self.key = key
         self.start_time = None
+        # Since dict is ordered, stake our ordering claim now, so child
+        # contexts don't complete and get in before us.
+        dictionary[key] = 0
 
     def __enter__(self):
         self.start_time = time.time()
@@ -693,116 +696,35 @@ class DepthGetter:
                 with torch.no_grad():
                     depth_features = self.depth_feature_extractor(inp)
                     depth_info = self.depther(**depth_features)
+                    # This is a tensor (1, height, width) with the depth in meters, float32.
+                    depth_m_t = depth_info['predicted_depth']
             
             with MeasureElapsed(self.report_info, 'depth_annotations'):
-
-                # This is a tensor (1, height, width) with the depth in meters, float32.
-                depth_m_t = depth_info['predicted_depth']
-
-                # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
-                depth_m = torch.nn.functional.interpolate(
-                    depth_m_t.unsqueeze(0), size=(height_out, width_out), mode='bilinear', align_corners=False
-                ).to('cpu').numpy().squeeze()
-
-                # import matplotlib.pyplot as plt
-                # fig, ax = plt.subplots()
-                # fig.colorbar(
-                #     plt.imshow(depth_m.squeeze(), cmap='winter', origin='upper',
-                #         aspect='equal', extent=[0,  depth_m.shape[1], depth_m.shape[0], 0]), # l, r, b, t
-                #     ax=ax,
-                #     label='Depth [m]',
-                # )
-                # # ax.set_xticks([])
-                # # ax.set_yticks([])
-                # fig.tight_layout()
-                # depth_model_id = self.depther_kw['model'].replace('/', '_').replace('\\', '_').replace(':', '_')
-                # fig.savefig(f'depth_{depth_model_id}.png', dpi=300)
-                # plt.show()
-                # plt.close(fig)
-
-                # Scale the max to 255 and min to 0,
-                # and make it uint8.
-                depth_m_u8 = depth_m - depth_m.min()
-                depth_m_u8 = depth_m_u8 / depth_m_u8.max()
-                depth_m_u8 = depth_m_u8 * 255
-                depth_m_u8 = depth_m_u8.astype('uint8').squeeze()
-
-                # Make it 3-channel, from one color to another
-                depth_m_u8 = np.stack([
-                    np.zeros_like(depth_m_u8),
-                    255-depth_m_u8,
-                    depth_m_u8,
-                ], axis=2)
-
-                furthest = depth_m.max()
-                closest = depth_m.min()
-                span = furthest - closest
-                if span > 0:
-                    qA = closest + 0.001 * span
-                    qB = closest + 0.999 * span
-                    # Find two places closest to the 10th and 90th quantiles of the depth, for labeling purposes.
-                    near_Apct_i = np.argmin(np.abs(depth_m.flat - qA))
-                    near_Bpct_i = np.argmin(np.abs(depth_m.flat - qB))
-
-                    # Replace qA and qB with the values at those places.
-                    # print('Quantile A target is', qA, 'meters')
-                    # print('Quantile B target is', qB, 'meters')
-                    qA = depth_m.flat[near_Apct_i]
-                    qB = depth_m.flat[near_Bpct_i]
-                    # print('Quantile A is', qA, 'meters')
-                    # print('Quantile B is', qB, 'meters')
-                    
-                    # Convert flat index into (r, c) -- get quotient and modulus.
-                    rows, cols = depth_m_u8.shape[:2]
-                    _rowsm, colsm = depth_m.shape[:2]
-                    # rowApred, colApred = near_Apct_i // colsm, near_Apct_i % colsm
-                    # rowBpred, colBpred = near_Bpct_i // colsm, near_Bpct_i % colsm
-                    rowApred, colApred = np.unravel_index(near_Apct_i, depth_m.squeeze().shape)
-                    rowBpred, colBpred = np.unravel_index(near_Bpct_i, depth_m.squeeze().shape)
-                    margin_r = 15
-                    margin_c = 60
-                    addmargin = lambda cr: (max(margin_c, min(cols-margin_c, cr[0])), max(margin_r, min(rows-margin_r, cr[1])))
-
-                    def pred_coords_to_img_coords(col_row):
-                        col, row = col_row
-                        # the two images are not the same shape.
-                        # Assume one is a scaled version of the other?
-                        pred_rows, pred_cols = depth_m.squeeze().shape[:2]
-                        img_rows, img_cols = depth_m_u8.squeeze().shape[:2]
-                        # Got to floaty coordinates, and then back to inty.
-                        # print(f'{col} * {img_cols} / {pred_cols} = {col*img_cols/pred_cols}')
-                        # print(f'{row} * {img_rows} / {pred_rows} = {row*img_rows/pred_rows}')
-                        return int(col * img_cols / pred_cols), int(row * img_rows / pred_rows)
-                        # Alternately, maybe one is a cropped version of the other (due to edge padding of a FCN).
-                    color = (
-                        0,
-                        0,
-                        255,
+                with MeasureElapsed(self.report_info, ' | depth rescale'):
+                    # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
+                    depth_m = torch.nn.functional.interpolate(
+                        depth_m_t.unsqueeze(0), size=(height_out, width_out),
+                        # mode='bilinear', align_corners=False,
+                        mode='nearest',
                     )
-                    # cv2.circle(depth_m_u8, pred_coords_to_img_coords((col, row)), 3, color, 1)
-                    # no, a MARKER_CROSS instead
-                    c, r = pred_coords_to_img_coords((colApred, rowApred))
-                    # print('Convert pred coords', (colApred, rowApred), 'to img coords', (c, r), 'for depth', qA, 'meters')
-                    cv2.drawMarker(depth_m_u8, (c, r), color, cv2.MARKER_CROSS, 10, 2)
-                    c, r = addmargin((c, r))
-                    cv2.putText(depth_m_u8, f'{qA:.2f} m', (c, r), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-                    # Draw a fat white cross at 10, 100
-                    cv2.drawMarker(depth_m_u8, (10, 100), (255, 255, 255), cv2.MARKER_CROSS, 10, 4)
-                    
+                with MeasureElapsed(self.report_info, ' | CPU copy'):
+                    depth_m = depth_m.to('cpu').numpy().squeeze()
 
-                    color = (
-                        0,
-                        255,
-                        0,
-                    )
-                    c, r = pred_coords_to_img_coords((colBpred, rowBpred))
-                    # print('Convert pred coords', (colBpred, rowBpred), 'to img coords', (c, r), 'for depth', qB, 'meters')
-                    cv2.drawMarker(depth_m_u8, (c, r), color, cv2.MARKER_CROSS, 10, 2)
-                    c, r = addmargin((c, r))
-                    cv2.putText(depth_m_u8, f'{qB:.2f} m', (c, r), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                with MeasureElapsed(self.report_info, ' | depth cmap'):
+                    # Use a cv2 colormap
+                    depth_m_u8 = (depth_m/depth_m.max() * 255)  # 0 is near, 255 is far
+                    # Reverse (255 is near, 0 is far)
+                    depth_m_u8 = 255 - depth_m_u8
+                    depth_m_u8 = cv2.applyColorMap(depth_m_u8.astype('uint8'), cv2.COLORMAP_VIRIDIS)
 
-                out['depth'] = depth_m_u8
+                with MeasureElapsed(self.report_info, ' | depth text'):
+                    furthest = depth_m.max()
+                    closest = depth_m.min()
+                    color = 255, 255, 255
+                    cv2.putText(depth_m_u8, f'Min: {closest:.2f} m',  (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    cv2.putText(depth_m_u8, f'Max: {furthest:.2f} m', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    out['depth'] = depth_m_u8
 
         if 'semantic' in which:
             with MeasureElapsed(self.report_info, 'semantic'):
@@ -810,9 +732,13 @@ class DepthGetter:
                     sem_features = self.segmenter_feature_extractor(inp)
                     semantic_info_cuda = self.segmenter(**sem_features)
                 logits = semantic_info_cuda['logits']
+                semantic_argmax = logits.argmax(dim=1)
+
 
             # Get the semantic segmentation annotations.
             with MeasureElapsed(self.report_info, 'semantic_annotations'):
+                with MeasureElapsed(self.report_info, ' | CPU copy'):
+                    semantic_argmax_cpu = semantic_argmax.squeeze(0).detach().cpu().numpy()
 
                 # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
                 # upsampled_logits = torch.nn.functional.interpolate(logits, size=(height_out, width_out), mode="bilinear", align_corners=False)
@@ -823,7 +749,7 @@ class DepthGetter:
                 # pipe_out = self.segmenter_pipeline(inp_pil)
 
                 if self.semantic_annotation_method == 'fast':
-                    semantic = logits.argmax(dim=1).squeeze(0).detach().cpu().numpy()
+                    semantic = semantic_argmax_cpu
                     # Apply a colormap with vmin=0 vmax=150
                     # Scale the 0-150 to 0-255.
                     nclasses = 150
@@ -917,7 +843,7 @@ class DepthGetter:
 
                 out['semantic'] = semantic
             
-        # Scale down the outputs.
+        # Scale down (up?) the outputs.
         with MeasureElapsed(self.report_info, 'annotation_scaling'):
             # Optionally scale down the output baseimage.
             if self.output_scaling == 1:
@@ -937,7 +863,10 @@ class DepthGetter:
                         arr = arr.permute(0, 3, 1, 2)
 
                         # Scale.
-                        arr = torch.nn.functional.interpolate(arr, size=(height_out, width_out), mode='bilinear', align_corners=False)
+                        arr = torch.nn.functional.interpolate(arr, size=(height_out, width_out), 
+                                                            #   mode='bilinear', align_corners=False,
+                                                            mode='nearest',
+                                                              )
 
                         # Put channel dim last.
                         arr = arr.permute(0, 2, 3, 1)
@@ -957,6 +886,7 @@ class DepthGetter:
             text_img_blur_radius = 5
             out_to_display = scaled_input.copy()
             out_to_display = cv2.blur(out_to_display, (text_img_blur_radius, text_img_blur_radius))
+            base_font_scale = 0.3
             row_offset = 19
             for class_label, elapsed_str in self.report_info.items():
                 if not isinstance(elapsed_str, str):
@@ -969,9 +899,9 @@ class DepthGetter:
                         elapsed_str = f'{elapsed_str:.3f} s ({1./elapsed_str:.1f} fps)'
                         # thickness = 2
                 col_row = (10, row_offset)
-                row_offset += 20
+                row_offset += 20 if base_font_scale == 0.4 else 16
                 thickness = 1
-                font_scale = 0.4
+                font_scale = base_font_scale
                 if class_label in ('depth_model', 'segmentation_model'):
                     font_scale = 0.3
                 # Argument order for putText is (image, text, org, fontFace, fontScale, color, thickness=None, lineType=None, bottomLeftOrigin=None)
