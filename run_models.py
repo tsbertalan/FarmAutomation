@@ -362,10 +362,12 @@ class DepthGetter:
                  input_alpha=1.0,
                  depth_alpha=0.6,
                  semantic_alpha=0.5,
+                 scale_before_cpucopy=(50, 75),
                  ):
         self.semantic_annotation_method = semantic_annotation_method
         self.input_alpha = input_alpha
         self.depth_alpha = depth_alpha
+        self.scale_before_cpucopy = scale_before_cpucopy
         self.semantic_alpha = semantic_alpha
         self.depther_kw = dict(
             model='vinvino02/glpn-nyu', # 0.5s
@@ -708,27 +710,43 @@ class DepthGetter:
                     with MeasureElapsed(self.report_info, '  depth rescale'):
                         # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
                         # TODO: If the output scaling decreases the resolution, do it before the copy to CPU.
-                        depth_m = depth_m_t.unsqueeze(0)
-                        torch.nn.functional.interpolate(
-                            depth_m_t.unsqueeze(0), size=(height_out, width_out),
-                            # mode='bilinear', align_corners=False,
-                            mode='nearest',
-                        )
+                        depth_m_gpu = depth_m_t.unsqueeze(0)
 
                     with MeasureElapsed(self.report_info, '  depth CPU copy'):
-                        self.report_info['    copied depth shape'] = 'x'.join([str(int(x)) for x in depth_m.shape])
-                        depth_m = depth_m.to('cpu').numpy().squeeze()
+                        to_copy = depth_m_gpu
+                        if self.scale_before_cpucopy is not None:
+                            with MeasureElapsed(self.report_info, '   depth scale before copy'):
+                                # First scale to the given size before copying to CPU.
+                                to_copy = torch.nn.functional.interpolate(
+                                    to_copy,
+                                    size=self.scale_before_cpucopy,
+                                    # mode='bilinear', align_corners=False,
+                                    mode='nearest',
+                                )
+
+                        with MeasureElapsed(self.report_info, '   depth actual CPU copy'):
+                            to_copy = to_copy.squeeze()
+                            self.report_info['     copied depth arr'] = 'x'.join([str(int(x)) for x in to_copy.shape]) + f' {to_copy.dtype}'
+                            depth_m = to_copy.detach().cpu().numpy()
+
+                        with MeasureElapsed(self.report_info, '   depth scale after copy'):
+                            # Now bring it to output shape.
+                            furthest = depth_m.max()
+                            closest = depth_m.min()
+                            
+                            # cv2 can't resize float array
+                            depth_m_u8 = (depth_m/depth_m.max() * 255)  # 0 is near, 255 is far
+                            # Reverse (255 is near, 0 is far)
+                            depth_m_u8 = 255 - depth_m_u8
+
+                            depth_m_u8 = depth_m_u8.astype('uint8')
+                            depth_m_u8 = cv2.resize(depth_m_u8, (width_out, height_out), interpolation=cv2.INTER_NEAREST)
 
                     with MeasureElapsed(self.report_info, '  depth cmap'):
                         # Use a cv2 colormap
-                        depth_m_u8 = (depth_m/depth_m.max() * 255)  # 0 is near, 255 is far
-                        # Reverse (255 is near, 0 is far)
-                        depth_m_u8 = 255 - depth_m_u8
-                        depth_m_u8 = cv2.applyColorMap(depth_m_u8.astype('uint8'), cv2.COLORMAP_VIRIDIS)
+                        depth_m_u8 = cv2.applyColorMap(depth_m_u8, cv2.COLORMAP_VIRIDIS)
 
                     with MeasureElapsed(self.report_info, '  depth text'):
-                        furthest = depth_m.max()
-                        closest = depth_m.min()
                         color = 255, 255, 255
                         cv2.putText(depth_m_u8, f'Min: {closest:.2f} m',  (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                         cv2.putText(depth_m_u8, f'Max: {furthest:.2f} m', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
@@ -746,8 +764,9 @@ class DepthGetter:
                 # Get the semantic segmentation annotations.
                 with MeasureElapsed(self.report_info, ' semantic_annotations'):
                     with MeasureElapsed(self.report_info, '  sem CPU copy'):
-                        self.report_info['    copied sem shape'] = 'x'.join([str(int(x)) for x in semantic_argmax.shape])
-                        semantic_argmax_cpu = semantic_argmax.squeeze(0).detach().cpu().numpy()
+                        to_copy = semantic_argmax.squeeze(0)
+                        self.report_info['    copied sem shape'] = 'x'.join([str(int(x)) for x in to_copy.shape]) + f' {to_copy.dtype}'
+                        semantic_argmax_cpu = to_copy.detach().cpu().numpy()
 
                     # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
                     # upsampled_logits = torch.nn.functional.interpolate(logits, size=(height_out, width_out), mode="bilinear", align_corners=False)
