@@ -378,8 +378,10 @@ class DepthGetter:
         self.semantic_alpha = semantic_alpha
         
         self.depther_kw = dict(
-            model='vinvino02/glpn-nyu', # 0.5s
-            # model='vinvino02/glpn-kitti', # 0.4s, ok results
+            # model='vinvino02/glpn-nyu', # 0.5s
+            model='vinvino02/glpn-kitti', # 0.4s, ok results
+            # model='sayakpaul/glpn-kitti-finetuned-diode-221214-123047',
+            # model='sayakpaul/glpn-nyu-finetuned-diode-230131-041708',
             # model='ChristianOrr/madnet_keras',  # doesn't work (missing config.json)
             # model='Sohaib36/MonoScene', # doesn't work (not a valid model identifier??)
             # model='Intel/dpt-large', # 5s; good, but reversed direction??
@@ -770,10 +772,10 @@ class DepthGetter:
 
                     with MeasureElapsed(self.report_info, '  depth cmap'):
                         # Use a cv2 colormap
-                        depth_m_u8 = cv2.applyColorMap(depth_m_u8, cv2.COLORMAP_VIRIDIS)
+                        depth_m_u8 = cv2.applyColorMap(depth_m_u8, cv2.COLORMAP_TURBO)
 
                     with MeasureElapsed(self.report_info, '  depth text'):
-                        color = 255, 255, 255
+                        color = 0,0,0
                         cv2.putText(depth_m_u8, f'Min: {closest:.2f} m',  (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                         cv2.putText(depth_m_u8, f'Max: {furthest:.2f} m', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                         out['depth'] = depth_m_u8
@@ -1003,7 +1005,8 @@ class DepthGetter:
                     import matplotlib.pyplot as plt
                     fig = plt.figure()
                     ax = fig.add_subplot(111, projection='3d')
-                    ax.set_proj_type('persp', focal_length=1.0)  # l=0.2 -> FOV = 157.4 deg
+                    ax.set_proj_type('ortho')
+                    # ax.set_proj_type('persp', focal_length=1.0)  # l=0.2 -> FOV = 157.4 deg
                     if 'semantic_argmax_cpu' in locals():
                         c = semantic_argmax_cpu
                     else:
@@ -1011,10 +1014,13 @@ class DepthGetter:
                     cmap = self.loaded_intrinsics_file.get('plot_cmap', 'inferno')
                     vmin = self.loaded_intrinsics_file.get('plot_vmin', 0)
                     vmax = self.loaded_intrinsics_file.get('plot_vmax', 150)
-                    ax.scatter(xyz_cpu[0], xyz_cpu[1], xyz_cpu[2],
+                    x, y, z = xyz_cpu
+                    not_too_high = z <= self.loaded_intrinsics_file.get('plot_zmax', np.inf)
+                    ok = not_too_high # We can boolean in some other conditions too here.
+                    ax.scatter(x[ok], y[ok], z[ok],
                                s=self.loaded_intrinsics_file.get('plot_point_size', 0.01),
                                alpha=self.loaded_intrinsics_file.get('plot_point_alpha', 0.9),
-                               c=c, cmap=cmap, vmin=vmin, vmax=vmax
+                               c=c.ravel()[ok], cmap=cmap, vmin=vmin, vmax=vmax
                                )
                     # Rotate slowly in time.
                     angle = self.loaded_intrinsics_file.get('plot_view_angle_deg', 'rotate')
