@@ -362,7 +362,7 @@ class DepthGetter:
                  input_alpha=1.0,
                  depth_alpha=0.6,
                  semantic_alpha=0.5,
-                 scale_before_cpucopy=(50, 75),
+                 scale_before_cpucopy=(128, 128),
                  ):
         self.semantic_annotation_method = semantic_annotation_method
         self.input_alpha = input_alpha
@@ -724,10 +724,19 @@ class DepthGetter:
                                     mode='nearest',
                                 )
 
+                        with MeasureElapsed(self.report_info, '   depth cast before copy'):
+                            # Make it into big int32s first.
+                            scaling_factor = 1000.0
+                            to_copy = (to_copy * scaling_factor).to(torch.int64)
+
                         with MeasureElapsed(self.report_info, '   depth actual CPU copy'):
                             to_copy = to_copy.squeeze()
                             self.report_info['     copied depth arr'] = 'x'.join([str(int(x)) for x in to_copy.shape]) + f' {to_copy.dtype}'
                             depth_m = to_copy.detach().cpu().numpy()
+
+                        with MeasureElapsed(self.report_info, '   depth cast after copy'):
+                            # Make it back into float32.
+                            depth_m = depth_m.astype('float32') / scaling_factor
 
                         with MeasureElapsed(self.report_info, '   depth scale after copy'):
                             # Now bring it to output shape.
@@ -763,9 +772,9 @@ class DepthGetter:
 
                 # Get the semantic segmentation annotations.
                 with MeasureElapsed(self.report_info, ' semantic_annotations'):
-                    with MeasureElapsed(self.report_info, '  sem CPU copy'):
-                        to_copy = semantic_argmax.squeeze(0)
-                        self.report_info['    copied sem shape'] = 'x'.join([str(int(x)) for x in to_copy.shape]) + f' {to_copy.dtype}'
+                    with MeasureElapsed(self.report_info, '  sem actual CPU copy'):
+                        to_copy = semantic_argmax.squeeze()
+                        self.report_info['    copied sem arr'] = 'x'.join([str(int(x)) for x in to_copy.shape]) + f' {to_copy.dtype}'
                         semantic_argmax_cpu = to_copy.detach().cpu().numpy()
 
                     # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
@@ -914,11 +923,13 @@ class DepthGetter:
             text_img_blur_radius = 5
             out_to_display = scaled_input.copy()
             out_to_display = cv2.blur(out_to_display, (text_img_blur_radius, text_img_blur_radius))
-            base_font_scale = 0.4
+            base_font_scale = 0.32
             row_offset = 19
+            row_increment = 10
             for class_label, elapsed_str in self.report_info.items():
                 if not isinstance(elapsed_str, str):
-                    if elapsed_str < .001:
+                    minimum_displayed_time = 1e-4
+                    if elapsed_str < minimum_displayed_time:
                         continue
                     if class_label != 'loop':
                         class_label = f' {class_label}'
@@ -927,11 +938,11 @@ class DepthGetter:
                         elapsed_str = f'{elapsed_str:.3f} s ({1./elapsed_str:.1f} fps)'
                         # thickness = 2
                 col_row = (10, row_offset)
-                row_offset += 12
+                row_offset += row_increment
                 thickness = 1
                 font_scale = base_font_scale
                 if class_label in self.info_lines:
-                    font_scale = 0.3
+                    font_scale = 0.28
                 if class_label == 'empty_line':
                     continue
                 else:
