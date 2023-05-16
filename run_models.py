@@ -785,100 +785,101 @@ class DepthGetter:
                     # inp_pil = Image.fromarray(inp.detach().cpu().numpy().squeeze(0).transpose(1, 2, 0).astype('uint8'))
                     # pipe_out = self.segmenter_pipeline(inp_pil)
 
-                    if self.semantic_annotation_method == 'fast':
-                        semantic = semantic_argmax_cpu
-                        # Apply a colormap with vmin=0 vmax=150
-                        # Scale the 0-150 to 0-255.
-                        nclasses = 150
-                        semantic = (255 * semantic / nclasses).astype('uint8')
-                        semantic = cv2.applyColorMap(semantic, cv2.COLORMAP_TURBO)
-                    else:
-                        from transformers.utils.generic import ModelOutput
-                        # First dim of logits needs to match len(target_size) (both 1).
-                        assert logits.shape[0] == 1
-                        model_outputs = ModelOutput(logits=logits.to('cpu'), target_size=[(height_out, width_out)],)
-                        semantic_info = self.segmenter_pipeline.postprocess(model_outputs)
+                    with MeasureElapsed(self.report_info, '  semantic cmap'):
+                        if self.semantic_annotation_method == 'fast':
+                            semantic = semantic_argmax_cpu
+                            # Apply a colormap with vmin=0 vmax=150
+                            # Scale the 0-150 to 0-255.
+                            nclasses = 150
+                            semantic = (255 * semantic / nclasses).astype('uint8')
+                            semantic = cv2.applyColorMap(semantic, cv2.COLORMAP_TURBO)
+                        else:
+                            from transformers.utils.generic import ModelOutput
+                            # First dim of logits needs to match len(target_size) (both 1).
+                            assert logits.shape[0] == 1
+                            model_outputs = ModelOutput(logits=logits.to('cpu'), target_size=[(height_out, width_out)],)
+                            semantic_info = self.segmenter_pipeline.postprocess(model_outputs)
 
 
-                        semantic = np.zeros((height_out, width_out, 3), dtype='uint8')
+                            semantic = np.zeros((height_out, width_out, 3), dtype='uint8')
 
-                        # Merge synonyms.
-                        canonicalize = lambda label: self.class_synonyms.get(label, label)
+                            # Merge synonyms.
+                            canonicalize = lambda label: self.class_synonyms.get(label, label)
 
-                        merged = {}
-                        for key in set([
-                            canonicalize(item['label'])
-                            for item in semantic_info
-                            ]):
-                            # get all the items with this label.
-                            items = [item for item in semantic_info if canonicalize(item['label']) == key]
-                            sz = None if items[0]['score'] is None else np.zeros_like(items[0]['score'])
-                            merged_item = {
-                                'score': sz,
-                                'label': key,
-                                'mask': np.zeros_like(items[0]['mask']),
-                            }
-                            for item in items:
-                                if sz is not None:
-                                    merged_item['score'][item['mask']] = item['score'][item['mask']]
-                                merged_item['mask'][np.asarray(item['mask'], dtype='bool')] = 1
-                            merged_item['mask'] = Image.fromarray(merged_item['mask'])
-                            merged[key] = merged_item
-                        original_semantic_info = semantic_info
-                        semantic_info = list(merged.values())
+                            merged = {}
+                            for key in set([
+                                canonicalize(item['label'])
+                                for item in semantic_info
+                                ]):
+                                # get all the items with this label.
+                                items = [item for item in semantic_info if canonicalize(item['label']) == key]
+                                sz = None if items[0]['score'] is None else np.zeros_like(items[0]['score'])
+                                merged_item = {
+                                    'score': sz,
+                                    'label': key,
+                                    'mask': np.zeros_like(items[0]['mask']),
+                                }
+                                for item in items:
+                                    if sz is not None:
+                                        merged_item['score'][item['mask']] = item['score'][item['mask']]
+                                    merged_item['mask'][np.asarray(item['mask'], dtype='bool')] = 1
+                                merged_item['mask'] = Image.fromarray(merged_item['mask'])
+                                merged[key] = merged_item
+                            original_semantic_info = semantic_info
+                            semantic_info = list(merged.values())
 
-                        # For each class...
-                        for item in semantic_info:
-                            # if we haven't seen it before, assign it a random color.
-                            class_label = item['label']
-                            if class_label not in self.class_colors:
-                                self.class_colors[class_label] = np.random.randint(0, 255, size=3, dtype='uint8')
-                        
-                            # Then, fill in the masked areas with that color.
-                            rows, cols = rows_cols = np.argwhere(item['mask']).T
-                            color = np.asarray(self.class_colors[class_label])
-                            # Scale the color by the logconfidence.
-                            sc = item['score']
-                            if sc is None:
-                                if self.scores_available is None:
-                                    # Haven't talked about it yet.
-                                    print('No scores available.')
-                                self.scores_available = False
-                                sc = 0.9
-                            else:
-                                self.scores_available = True
-                            logscore = max(np.log(1. - sc), -10)  # from 0 to -10, with -10 being most confident.
-                            item['lightness'] = lightness = 1.0 if not self.scores_available else (-logscore/10.) # now from 0 to 1, with 1 being most confident.
-                            confident_color = (color * lightness).astype('uint8')
-                            semantic[rows, cols, :] = confident_color
+                            # For each class...
+                            for item in semantic_info:
+                                # if we haven't seen it before, assign it a random color.
+                                class_label = item['label']
+                                if class_label not in self.class_colors:
+                                    self.class_colors[class_label] = np.random.randint(0, 255, size=3, dtype='uint8')
+                            
+                                # Then, fill in the masked areas with that color.
+                                rows, cols = rows_cols = np.argwhere(item['mask']).T
+                                color = np.asarray(self.class_colors[class_label])
+                                # Scale the color by the logconfidence.
+                                sc = item['score']
+                                if sc is None:
+                                    if self.scores_available is None:
+                                        # Haven't talked about it yet.
+                                        print('No scores available.')
+                                    self.scores_available = False
+                                    sc = 0.9
+                                else:
+                                    self.scores_available = True
+                                logscore = max(np.log(1. - sc), -10)  # from 0 to -10, with -10 being most confident.
+                                item['lightness'] = lightness = 1.0 if not self.scores_available else (-logscore/10.) # now from 0 to 1, with 1 being most confident.
+                                confident_color = (color * lightness).astype('uint8')
+                                semantic[rows, cols, :] = confident_color
 
-                            # Point closest to the centroid.
-                            centroid_r = np.mean(rows).astype('int')
-                            centroid_c = np.mean(cols).astype('int')
-                            iclosest = np.argmin(np.linalg.norm(rows_cols.T - np.array([centroid_r, centroid_c]), axis=1))
-                            item['centroid'] = rows[iclosest], cols[iclosest]
+                                # Point closest to the centroid.
+                                centroid_r = np.mean(rows).astype('int')
+                                centroid_c = np.mean(cols).astype('int')
+                                iclosest = np.argmin(np.linalg.norm(rows_cols.T - np.array([centroid_r, centroid_c]), axis=1))
+                                item['centroid'] = rows[iclosest], cols[iclosest]
 
-                            uint8 = lambda f: int(0 if f < 0 else (255 if f > 255 else f))
-                            item['confident_label_color'] = (uint8(255 * lightness), uint8(255 * lightness), uint8(255 * lightness))
+                                uint8 = lambda f: int(0 if f < 0 else (255 if f > 255 else f))
+                                item['confident_label_color'] = (uint8(255 * lightness), uint8(255 * lightness), uint8(255 * lightness))
 
-                        # Loop again to draw the labels on top.
-                        for item in semantic_info:
-                            rowApred, colApred = item['centroid']
-                            light = item['lightness']
-                            confident_label_color = item['confident_label_color']
-                            cv2.putText(
-                                semantic, 
-                                item['label'], 
-                                (colApred, rowApred), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 
-                                0.5, # font size
-                                confident_label_color,  # color
-                                1 if not self.scores_available else (2 if light > 0.9 else 1) # thickness
-                            )
+                            # Loop again to draw the labels on top.
+                            for item in semantic_info:
+                                rowApred, colApred = item['centroid']
+                                light = item['lightness']
+                                confident_label_color = item['confident_label_color']
+                                cv2.putText(
+                                    semantic, 
+                                    item['label'], 
+                                    (colApred, rowApred), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 
+                                    0.5, # font size
+                                    confident_label_color,  # color
+                                    1 if not self.scores_available else (2 if light > 0.9 else 1) # thickness
+                                )
 
-                    semantic = cv2.cvtColor(semantic, cv2.COLOR_RGB2BGR)
+                        semantic = cv2.cvtColor(semantic, cv2.COLOR_RGB2BGR)
 
-                    out['semantic'] = semantic
+                        out['semantic'] = semantic
             
         # Scale down (up?) the outputs.
         with MeasureElapsed(self.report_info, 'annotation_scaling'):
@@ -1132,7 +1133,8 @@ if __name__ == '__main__':
     main(
         # adjust_first=True,
         # do_depth=False,
-        semantic_annotation_method='fast', # full|fast
+        # semantic_annotation_method='fast',
+        semantic_annotation_method='full',
         semantic_alpha=1.0, depth_alpha=1.0,
         # vehicle_settings='lawnmower_maximal',
         vehicle_settings='dicycle',
