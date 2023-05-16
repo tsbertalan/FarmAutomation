@@ -432,13 +432,13 @@ class DepthGetter:
         )
         self.config_vis = Config(
             os.path.join(HERE, 'config_vis.json'),
-            depth_cmap='COLORMAP_DEEPGREEN',
+            depth_cmap='COLORMAP_TWILIGHT',
             depth_text_color=(255,255,255),
             plot_cmap="gist_rainbow_r",
             plot_vmin=0.0,
             plot_vmax=16,
             plot_rotation_rate_deg_per_sec=14,
-            plot_view_angle_deg=0,
+            plot_view_angle_deg="rotate",
             plot_view_elevation_deg=90,
             plot_xlim='flip',
             plot_ylim='flip',
@@ -840,7 +840,12 @@ class DepthGetter:
                         try:
                             depth_cmap = getattr(cv2, self.config_vis.depth_cmap)
                         except AttributeError:
-                            depth_cmap = cv2.COLORMAP_INFERNO
+                            try:
+                                depth_cmap = getattr(cv2, 'COLORMAP_' + str(self.config_vis.depth_cmap).upper())
+                            except AttributeError:
+                                import warnings
+                                warnings.warn(f'Invalid depth_cmap {self.config_vis.depth_cmap}')
+                                depth_cmap = cv2.COLORMAP_INFERNO
                         depth_m_u8 = cv2.applyColorMap(depth_m_u8, depth_cmap)
                         depth_m_u8 = cv2.cvtColor(depth_m_u8, cv2.COLOR_BGR2RGB)
 
@@ -1095,8 +1100,8 @@ class DepthGetter:
                                )
                     # Rotate slowly in time.
                     angle = self.config_vis.plot_view_angle_deg
-                    if str(angle) == 'rotate':
-                        rotation_rate = self.plot_rotation_rate_deg_per_sec
+                    if str(angle).lower() == 'rotate':
+                        rotation_rate = self.config_vis.plot_rotation_rate_deg_per_sec
                         angle = (time.time() * rotation_rate) % 360
                     elev = self.config_vis.plot_view_elevation_deg
                     ax.view_init(elev, angle)
