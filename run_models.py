@@ -48,10 +48,10 @@ class MeasureElapsed:
         dictionary[key] = 0
 
     def __enter__(self):
-        self.start_time = time.time()
+        self.start_time = time.monotonic()
 
     def __exit__(self, *args):
-        self.dictionary[self.key] = time.time() - self.start_time
+        self.dictionary[self.key] = time.monotonic() - self.start_time
 
 
 def clamped_resize(image: torch.tensor, size_divisor, resample='bilinear') -> torch.tensor:
@@ -688,160 +688,161 @@ class DepthGetter:
 
         if 'depth' in which:
             with MeasureElapsed(self.report_info, 'depth'):
-                # Evaluate the depth model on the framegrab.
-                # # Convert to torch tensor.
-                # inp = torch.from_numpy(inp)
-                tick = time.time()
-                # No gradients:
-                with torch.no_grad():
-                    depth_features = self.depth_feature_extractor(inp)
-                    depth_info = self.depther(**depth_features)
-                    # This is a tensor (1, height, width) with the depth in meters, float32.
-                    depth_m_t = depth_info['predicted_depth']
-            
-            with MeasureElapsed(self.report_info, 'depth_annotations'):
-                with MeasureElapsed(self.report_info, ' | depth rescale'):
-                    # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
-                    depth_m = torch.nn.functional.interpolate(
-                        depth_m_t.unsqueeze(0), size=(height_out, width_out),
-                        # mode='bilinear', align_corners=False,
-                        mode='nearest',
-                    )
+                with MeasureElapsed(self.report_info, ' depth net'):
+                    # Evaluate the depth model on the framegrab.
+                    # # Convert to torch tensor.
+                    # inp = torch.from_numpy(inp)
+                    tick = time.time()
+                    # No gradients:
+                    with torch.no_grad():
+                        depth_features = self.depth_feature_extractor(inp)
+                        depth_info = self.depther(**depth_features)
+                        # This is a tensor (1, height, width) with the depth in meters, float32.
+                        depth_m_t = depth_info['predicted_depth']
+                
+                with MeasureElapsed(self.report_info, ' depth_annotations'):
+                    with MeasureElapsed(self.report_info, '  depth rescale'):
+                        # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
+                        depth_m = torch.nn.functional.interpolate(
+                            depth_m_t.unsqueeze(0), size=(height_out, width_out),
+                            # mode='bilinear', align_corners=False,
+                            mode='nearest',
+                        )
 
-                with MeasureElapsed(self.report_info, ' | CPU copy'):
-                    depth_m = depth_m.to('cpu').numpy().squeeze()
+                    with MeasureElapsed(self.report_info, '  depth CPU copy'):
+                        depth_m = depth_m.to('cpu').numpy().squeeze()
 
-                with MeasureElapsed(self.report_info, ' | depth cmap'):
-                    # Use a cv2 colormap
-                    depth_m_u8 = (depth_m/depth_m.max() * 255)  # 0 is near, 255 is far
-                    # Reverse (255 is near, 0 is far)
-                    depth_m_u8 = 255 - depth_m_u8
-                    depth_m_u8 = cv2.applyColorMap(depth_m_u8.astype('uint8'), cv2.COLORMAP_VIRIDIS)
+                    with MeasureElapsed(self.report_info, '  depth cmap'):
+                        # Use a cv2 colormap
+                        depth_m_u8 = (depth_m/depth_m.max() * 255)  # 0 is near, 255 is far
+                        # Reverse (255 is near, 0 is far)
+                        depth_m_u8 = 255 - depth_m_u8
+                        depth_m_u8 = cv2.applyColorMap(depth_m_u8.astype('uint8'), cv2.COLORMAP_VIRIDIS)
 
-                with MeasureElapsed(self.report_info, ' | depth text'):
-                    furthest = depth_m.max()
-                    closest = depth_m.min()
-                    color = 255, 255, 255
-                    cv2.putText(depth_m_u8, f'Min: {closest:.2f} m',  (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-                    cv2.putText(depth_m_u8, f'Max: {furthest:.2f} m', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-                    out['depth'] = depth_m_u8
+                    with MeasureElapsed(self.report_info, '  depth text'):
+                        furthest = depth_m.max()
+                        closest = depth_m.min()
+                        color = 255, 255, 255
+                        cv2.putText(depth_m_u8, f'Min: {closest:.2f} m',  (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                        cv2.putText(depth_m_u8, f'Max: {furthest:.2f} m', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                        out['depth'] = depth_m_u8
 
         if 'semantic' in which:
             with MeasureElapsed(self.report_info, 'semantic'):
-                with torch.no_grad():
-                    sem_features = self.segmenter_feature_extractor(inp)
-                    semantic_info_cuda = self.segmenter(**sem_features)
-                logits = semantic_info_cuda['logits']
-                semantic_argmax = logits.argmax(dim=1)
+                with MeasureElapsed(self.report_info, ' semantic net'):
+                    with torch.no_grad():
+                        sem_features = self.segmenter_feature_extractor(inp)
+                        semantic_info_cuda = self.segmenter(**sem_features)
+                    logits = semantic_info_cuda['logits']
+                    semantic_argmax = logits.argmax(dim=1)
+
+                # Get the semantic segmentation annotations.
+                with MeasureElapsed(self.report_info, ' semantic_annotations'):
+                    with MeasureElapsed(self.report_info, '  sem CPU copy'):
+                        semantic_argmax_cpu = semantic_argmax.squeeze(0).detach().cpu().numpy()
+
+                    # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
+                    # upsampled_logits = torch.nn.functional.interpolate(logits, size=(height_out, width_out), mode="bilinear", align_corners=False)
+
+                    # pred_seg = torch.argmax(upsampled_logits, dim=1).squeeze(0).detach().cpu().numpy()
+
+                    # inp_pil = Image.fromarray(inp.detach().cpu().numpy().squeeze(0).transpose(1, 2, 0).astype('uint8'))
+                    # pipe_out = self.segmenter_pipeline(inp_pil)
+
+                    if self.semantic_annotation_method == 'fast':
+                        semantic = semantic_argmax_cpu
+                        # Apply a colormap with vmin=0 vmax=150
+                        # Scale the 0-150 to 0-255.
+                        nclasses = 150
+                        semantic = (255 * semantic / nclasses).astype('uint8')
+                        semantic = cv2.applyColorMap(semantic, cv2.COLORMAP_TURBO)
+                    else:
+                        from transformers.utils.generic import ModelOutput
+                        # First dim of logits needs to match len(target_size) (both 1).
+                        assert logits.shape[0] == 1
+                        model_outputs = ModelOutput(logits=logits.to('cpu'), target_size=[(height_out, width_out)],)
+                        semantic_info = self.segmenter_pipeline.postprocess(model_outputs)
 
 
-            # Get the semantic segmentation annotations.
-            with MeasureElapsed(self.report_info, 'semantic_annotations'):
-                with MeasureElapsed(self.report_info, ' | CPU copy'):
-                    semantic_argmax_cpu = semantic_argmax.squeeze(0).detach().cpu().numpy()
+                        semantic = np.zeros((height_out, width_out, 3), dtype='uint8')
 
-                # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
-                # upsampled_logits = torch.nn.functional.interpolate(logits, size=(height_out, width_out), mode="bilinear", align_corners=False)
+                        # Merge synonyms.
+                        canonicalize = lambda label: self.class_synonyms.get(label, label)
 
-                # pred_seg = torch.argmax(upsampled_logits, dim=1).squeeze(0).detach().cpu().numpy()
+                        merged = {}
+                        for key in set([
+                            canonicalize(item['label'])
+                            for item in semantic_info
+                            ]):
+                            # get all the items with this label.
+                            items = [item for item in semantic_info if canonicalize(item['label']) == key]
+                            sz = None if items[0]['score'] is None else np.zeros_like(items[0]['score'])
+                            merged_item = {
+                                'score': sz,
+                                'label': key,
+                                'mask': np.zeros_like(items[0]['mask']),
+                            }
+                            for item in items:
+                                if sz is not None:
+                                    merged_item['score'][item['mask']] = item['score'][item['mask']]
+                                merged_item['mask'][np.asarray(item['mask'], dtype='bool')] = 1
+                            merged_item['mask'] = Image.fromarray(merged_item['mask'])
+                            merged[key] = merged_item
+                        original_semantic_info = semantic_info
+                        semantic_info = list(merged.values())
 
-                # inp_pil = Image.fromarray(inp.detach().cpu().numpy().squeeze(0).transpose(1, 2, 0).astype('uint8'))
-                # pipe_out = self.segmenter_pipeline(inp_pil)
+                        # For each class...
+                        for item in semantic_info:
+                            # if we haven't seen it before, assign it a random color.
+                            class_label = item['label']
+                            if class_label not in self.class_colors:
+                                self.class_colors[class_label] = np.random.randint(0, 255, size=3, dtype='uint8')
+                        
+                            # Then, fill in the masked areas with that color.
+                            rows, cols = rows_cols = np.argwhere(item['mask']).T
+                            color = np.asarray(self.class_colors[class_label])
+                            # Scale the color by the logconfidence.
+                            sc = item['score']
+                            if sc is None:
+                                if self.scores_available is None:
+                                    # Haven't talked about it yet.
+                                    print('No scores available.')
+                                self.scores_available = False
+                                sc = 0.9
+                            else:
+                                self.scores_available = True
+                            logscore = max(np.log(1. - sc), -10)  # from 0 to -10, with -10 being most confident.
+                            item['lightness'] = lightness = 1.0 if not self.scores_available else (-logscore/10.) # now from 0 to 1, with 1 being most confident.
+                            confident_color = (color * lightness).astype('uint8')
+                            semantic[rows, cols, :] = confident_color
 
-                if self.semantic_annotation_method == 'fast':
-                    semantic = semantic_argmax_cpu
-                    # Apply a colormap with vmin=0 vmax=150
-                    # Scale the 0-150 to 0-255.
-                    nclasses = 150
-                    semantic = (255 * semantic / nclasses).astype('uint8')
-                    semantic = cv2.applyColorMap(semantic, cv2.COLORMAP_TURBO)
-                else:
-                    from transformers.utils.generic import ModelOutput
-                    # First dim of logits needs to match len(target_size) (both 1).
-                    assert logits.shape[0] == 1
-                    model_outputs = ModelOutput(logits=logits.to('cpu'), target_size=[(height_out, width_out)],)
-                    semantic_info = self.segmenter_pipeline.postprocess(model_outputs)
+                            # Point closest to the centroid.
+                            centroid_r = np.mean(rows).astype('int')
+                            centroid_c = np.mean(cols).astype('int')
+                            iclosest = np.argmin(np.linalg.norm(rows_cols.T - np.array([centroid_r, centroid_c]), axis=1))
+                            item['centroid'] = rows[iclosest], cols[iclosest]
 
+                            uint8 = lambda f: int(0 if f < 0 else (255 if f > 255 else f))
+                            item['confident_label_color'] = (uint8(255 * lightness), uint8(255 * lightness), uint8(255 * lightness))
 
-                    semantic = np.zeros((height_out, width_out, 3), dtype='uint8')
+                        # Loop again to draw the labels on top.
+                        for item in semantic_info:
+                            rowApred, colApred = item['centroid']
+                            light = item['lightness']
+                            confident_label_color = item['confident_label_color']
+                            cv2.putText(
+                                semantic, 
+                                item['label'], 
+                                (colApred, rowApred), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 
+                                0.5, # font size
+                                confident_label_color,  # color
+                                1 if not self.scores_available else (2 if light > 0.9 else 1) # thickness
+                            )
 
-                    # Merge synonyms.
-                    canonicalize = lambda label: self.class_synonyms.get(label, label)
+                    semantic = cv2.cvtColor(semantic, cv2.COLOR_RGB2BGR)
 
-                    merged = {}
-                    for key in set([
-                        canonicalize(item['label'])
-                        for item in semantic_info
-                        ]):
-                        # get all the items with this label.
-                        items = [item for item in semantic_info if canonicalize(item['label']) == key]
-                        sz = None if items[0]['score'] is None else np.zeros_like(items[0]['score'])
-                        merged_item = {
-                            'score': sz,
-                            'label': key,
-                            'mask': np.zeros_like(items[0]['mask']),
-                        }
-                        for item in items:
-                            if sz is not None:
-                                merged_item['score'][item['mask']] = item['score'][item['mask']]
-                            merged_item['mask'][np.asarray(item['mask'], dtype='bool')] = 1
-                        merged_item['mask'] = Image.fromarray(merged_item['mask'])
-                        merged[key] = merged_item
-                    original_semantic_info = semantic_info
-                    semantic_info = list(merged.values())
-
-                    # For each class...
-                    for item in semantic_info:
-                        # if we haven't seen it before, assign it a random color.
-                        class_label = item['label']
-                        if class_label not in self.class_colors:
-                            self.class_colors[class_label] = np.random.randint(0, 255, size=3, dtype='uint8')
-                    
-                        # Then, fill in the masked areas with that color.
-                        rows, cols = rows_cols = np.argwhere(item['mask']).T
-                        color = np.asarray(self.class_colors[class_label])
-                        # Scale the color by the logconfidence.
-                        sc = item['score']
-                        if sc is None:
-                            if self.scores_available is None:
-                                # Haven't talked about it yet.
-                                print('No scores available.')
-                            self.scores_available = False
-                            sc = 0.9
-                        else:
-                            self.scores_available = True
-                        logscore = max(np.log(1. - sc), -10)  # from 0 to -10, with -10 being most confident.
-                        item['lightness'] = lightness = 1.0 if not self.scores_available else (-logscore/10.) # now from 0 to 1, with 1 being most confident.
-                        confident_color = (color * lightness).astype('uint8')
-                        semantic[rows, cols, :] = confident_color
-
-                        # Point closest to the centroid.
-                        centroid_r = np.mean(rows).astype('int')
-                        centroid_c = np.mean(cols).astype('int')
-                        iclosest = np.argmin(np.linalg.norm(rows_cols.T - np.array([centroid_r, centroid_c]), axis=1))
-                        item['centroid'] = rows[iclosest], cols[iclosest]
-
-                        uint8 = lambda f: int(0 if f < 0 else (255 if f > 255 else f))
-                        item['confident_label_color'] = (uint8(255 * lightness), uint8(255 * lightness), uint8(255 * lightness))
-
-                    # Loop again to draw the labels on top.
-                    for item in semantic_info:
-                        rowApred, colApred = item['centroid']
-                        light = item['lightness']
-                        confident_label_color = item['confident_label_color']
-                        cv2.putText(
-                            semantic, 
-                            item['label'], 
-                            (colApred, rowApred), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 
-                            0.5, # font size
-                            confident_label_color,  # color
-                            1 if not self.scores_available else (2 if light > 0.9 else 1) # thickness
-                        )
-
-                semantic = cv2.cvtColor(semantic, cv2.COLOR_RGB2BGR)
-
-                out['semantic'] = semantic
+                    out['semantic'] = semantic
             
         # Scale down (up?) the outputs.
         with MeasureElapsed(self.report_info, 'annotation_scaling'):
@@ -886,20 +887,20 @@ class DepthGetter:
             text_img_blur_radius = 5
             out_to_display = scaled_input.copy()
             out_to_display = cv2.blur(out_to_display, (text_img_blur_radius, text_img_blur_radius))
-            base_font_scale = 0.3
+            base_font_scale = 0.4
             row_offset = 19
             for class_label, elapsed_str in self.report_info.items():
                 if not isinstance(elapsed_str, str):
-                    if elapsed_str < .003:
+                    if elapsed_str < .001:
                         continue
                     if class_label != 'loop':
-                        class_label = f'| {class_label}'
+                        class_label = f' {class_label}'
                         elapsed_str = f'{elapsed_str:.3f} s'
                     else:
                         elapsed_str = f'{elapsed_str:.3f} s ({1./elapsed_str:.1f} fps)'
                         # thickness = 2
                 col_row = (10, row_offset)
-                row_offset += 20 if base_font_scale == 0.4 else 16
+                row_offset += 12
                 thickness = 1
                 font_scale = base_font_scale
                 if class_label in ('depth_model', 'segmentation_model'):
