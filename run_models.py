@@ -370,7 +370,7 @@ class DepthGetter:
         self.scale_before_cpucopy = scale_before_cpucopy
         self.cast_before_depthcopy = cast_before_depthcopy
         # Non-blocking copy actually makes things *worse*.
-        self.non_blocking_copy_dep = True
+        self.non_blocking_copy_dep = False
         self.non_blocking_copy_sem = False
 
         self.input_alpha = input_alpha
