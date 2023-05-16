@@ -518,10 +518,7 @@ class DepthGetter:
         self.scores_available = None
         
         self.report_info = OrderedDict()
-        from subprocess import check_output
-        sha = check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
-        msg_firstline = check_output(['git', 'log', '--format=%B', '-n', '1', sha]).decode('utf-8').strip().split('\n')[0]
-        self.report_info['Git'] = f'{sha[:10]} {msg_firstline}'
+        self.update_git_info()
         self.report_info['depth_model'] = self.depther_kw['model']
         self.report_info['segmentation_model'] = self.segmenter_kw['model']
         self.report_info['empty_line'] = ''
@@ -544,6 +541,12 @@ class DepthGetter:
         if self.output_scaling > 10:
             # Find the scaling that gets h to this.
             self.output_scaling = self.output_scaling / float(h)
+
+    def update_git_info(self):
+        from subprocess import check_output
+        sha = check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
+        msg_firstline = check_output(['git', 'log', '--format=%B', '-n', '1', sha]).decode('utf-8').strip().split('\n')[0]
+        self.report_info['Git'] = f'{sha[:10]} {msg_firstline}'
 
     @property
     def left_fraction(self):
@@ -1084,6 +1087,7 @@ class DepthGetter:
 
         # Write time-since-last to the framegrab.
         with MeasureElapsed(self.report_info, 'write_elapsed'):
+            self.update_git_info()
             text_img_blur_radius = 5
             out_to_display = scaled_input.copy()
             out_to_display = cv2.blur(out_to_display, (text_img_blur_radius, text_img_blur_radius))
