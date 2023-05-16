@@ -926,7 +926,7 @@ class DepthGetter:
                     # Translation of camera in 3d
                     t1, t2, t3 = 0, 0, 0
                     # Rotation of camera in 3d (applied after translation)
-                    rx, ry, rz = 0, 0, 0
+                    rx, ry, rz = np.pi, 0, 0
                     # From Euler angles to 3x3 rotation matrix
                     R = np.array([
                         [np.cos(rz)*np.cos(ry), np.cos(rz)*np.sin(ry)*np.sin(rx) - np.sin(rz)*np.cos(rx), np.cos(rz)*np.sin(ry)*np.cos(rx) + np.sin(rz)*np.sin(rx)],
