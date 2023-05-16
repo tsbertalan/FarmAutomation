@@ -400,6 +400,8 @@ class Config(SimpleNamespace):
                 if new_contents != self._last_loaded_contents:
                     self._changed = True
                     self._last_loaded_contents = new_contents
+                for (k, v) in self._defaults.items():
+                    new_contents.setdefault(k, v)
                 self.__dict__.update(new_contents)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
@@ -430,6 +432,8 @@ class DepthGetter:
         )
         self.config_vis = Config(
             os.path.join(HERE, 'config_vis.json'),
+            depth_cmap='COLORMAP_DEEPGREEN',
+            depth_text_color=(255,255,255),
             plot_cmap="gist_rainbow_r",
             plot_vmin=0.0,
             plot_vmax=16,
@@ -833,10 +837,15 @@ class DepthGetter:
 
                     with MeasureElapsed(self.report_info, '  depth cmap'):
                         # Use a cv2 colormap
-                        depth_m_u8 = cv2.applyColorMap(depth_m_u8, cv2.COLORMAP_BONE)
+                        try:
+                            depth_cmap = getattr(cv2, self.config_vis.depth_cmap)
+                        except AttributeError:
+                            depth_cmap = cv2.COLORMAP_INFERNO
+                        depth_m_u8 = cv2.applyColorMap(depth_m_u8, depth_cmap)
+                        depth_m_u8 = cv2.cvtColor(depth_m_u8, cv2.COLOR_BGR2RGB)
 
                     with MeasureElapsed(self.report_info, '  depth text'):
-                        color = 0,0,0
+                        color = self.config_vis.depth_text_color
                         cv2.putText(depth_m_u8, f'Min: {closest:.2f} m',  (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                         cv2.putText(depth_m_u8, f'Max: {furthest:.2f} m', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                         out['depth'] = depth_m_u8
