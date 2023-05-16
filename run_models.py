@@ -362,13 +362,21 @@ class DepthGetter:
                  input_alpha=1.0,
                  depth_alpha=0.6,
                  semantic_alpha=0.5,
-                 scale_before_cpucopy=(128, 128),
+                 scale_before_cpucopy=None,
+                 cast_before_depthcopy=False,
                  ):
         self.semantic_annotation_method = semantic_annotation_method
+
+        self.scale_before_cpucopy = scale_before_cpucopy
+        self.cast_before_depthcopy = cast_before_depthcopy
+        # Non-blocking copy actually makes things *worse*.
+        self.non_blocking_copy_dep = True
+        self.non_blocking_copy_sem = False
+
         self.input_alpha = input_alpha
         self.depth_alpha = depth_alpha
-        self.scale_before_cpucopy = scale_before_cpucopy
         self.semantic_alpha = semantic_alpha
+        
         self.depther_kw = dict(
             model='vinvino02/glpn-nyu', # 0.5s
             # model='vinvino02/glpn-kitti', # 0.4s, ok results
@@ -536,19 +544,6 @@ class DepthGetter:
         if self.output_scaling > 10:
             # Find the scaling that gets h to this.
             self.output_scaling = self.output_scaling / float(h)
-
-        # # put channels first
-        # inp = inp.permute(2, 0, 1).unsqueeze(0)
-        # # By default this "resizes" the image to the closest multiple of 32, then "rescales" it from uint8 [0, 255] to float32 [0, 1].
-        # depth_features = self.depth_feature_extractor(images=inp)  # Scaling and maybe uint8 range to float32 0-1 conversion happens here.
-        # seg_features = self.segmenter_feature_extractor(images=inp)
-        # depth_pixel_values = depth_features['pixel_values']
-        # seg_pixel_values = seg_features['pixel_values']
-        # for ar, name in zip([depth_pixel_values, seg_pixel_values], ['depth', 'seg']):
-        #     if isinstance(ar, list):
-        #         ar = ar[0]
-        #     device = getattr(ar, 'device', 'cpu')
-        #     print(name, ar.shape, ar.dtype, device, ar.min(), ar.max())
 
     @property
     def left_fraction(self):
@@ -724,19 +719,21 @@ class DepthGetter:
                                     mode='nearest',
                                 )
 
-                        with MeasureElapsed(self.report_info, '   depth cast before copy'):
-                            # Make it into big int32s first.
+                        if self.cast_before_depthcopy:
                             scaling_factor = 1000.0
-                            to_copy = (to_copy * scaling_factor).to(torch.int64)
+                            with MeasureElapsed(self.report_info, '   depth cast before copy'):
+                                # Make it into big int32s first.
+                                to_copy = (to_copy * scaling_factor).to(torch.int64)
 
                         with MeasureElapsed(self.report_info, '   depth actual CPU copy'):
                             to_copy = to_copy.squeeze()
                             self.report_info['     copied depth arr'] = 'x'.join([str(int(x)) for x in to_copy.shape]) + f' {to_copy.dtype}'
-                            depth_m = to_copy.detach().cpu().numpy()
+                            depth_m = to_copy.detach().to('cpu', non_blocking=self.non_blocking_copy_dep).numpy()
 
-                        with MeasureElapsed(self.report_info, '   depth cast after copy'):
-                            # Make it back into float32.
-                            depth_m = depth_m.astype('float32') / scaling_factor
+                        if self.cast_before_depthcopy:
+                            with MeasureElapsed(self.report_info, '   depth cast after copy'):
+                                # Make it back into float32.
+                                depth_m = depth_m.astype('float32') / scaling_factor
 
                         with MeasureElapsed(self.report_info, '   depth scale after copy'):
                             # Now bring it to output shape.
@@ -775,7 +772,7 @@ class DepthGetter:
                     with MeasureElapsed(self.report_info, '  sem actual CPU copy'):
                         to_copy = semantic_argmax.squeeze()
                         self.report_info['    copied sem arr'] = 'x'.join([str(int(x)) for x in to_copy.shape]) + f' {to_copy.dtype}'
-                        semantic_argmax_cpu = to_copy.detach().cpu().numpy()
+                        semantic_argmax_cpu = to_copy.detach().to('cpu', non_blocking=self.non_blocking_copy_sem).numpy()
 
                     # Rescale to input size. https://huggingface.co/docs/transformers/tasks/semantic_segmentation#inference
                     # upsampled_logits = torch.nn.functional.interpolate(logits, size=(height_out, width_out), mode="bilinear", align_corners=False)
