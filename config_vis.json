@@ -1,9 +1,10 @@
 {
     "depth_cmap": "twilight",
-    "plot_view_angle_deg": -10,
-    "plot_view_elevation_deg": 30,
-    "plot_xlim": [4, 0],
-    "plot_ylim": [2, -2],
+    "plot_view_angle_deg": 0,
+    "plot_view_elevation_deg": 90,
+    "plot_zmax": 0.8,
+    "plot_xlim": [8, 0],
+    "plot_ylim": [4, -4],
     "plot_point_alpha": 0.9,
-    "plot_point_size": 0.3
+    "plot_point_size": 2
 }
