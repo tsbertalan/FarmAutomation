@@ -2,7 +2,7 @@
     "depth_cmap": "twilight",
     "plot_view_angle_deg": 0,
     "plot_view_elevation_deg": 90,
-    "plot_zmax": 0.8,
+    "plot_zmax": 1.0,
     "plot_xlim": [8, 0],
     "plot_ylim": [4, -4],
     "plot_point_alpha": 0.9,
