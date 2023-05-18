@@ -1039,10 +1039,13 @@ class DepthGetter:
                     rx, ry, rz = self.config_cam.camera_rotation_over_pi
                     rx = rx * np.pi; ry = ry * np.pi; rz = rz * np.pi
                     # From Euler angles to 3x3 rotation matrix
+                    c_z = np.cos(rz); s_z = np.sin(rz)
+                    c_y = np.cos(ry); s_y = np.sin(ry)
+                    c_x = np.cos(rx); s_x = np.sin(rx)
                     R = np.array([
-                        [np.cos(rz)*np.cos(ry), np.cos(rz)*np.sin(ry)*np.sin(rx) - np.sin(rz)*np.cos(rx), np.cos(rz)*np.sin(ry)*np.cos(rx) + np.sin(rz)*np.sin(rx)],
-                        [np.sin(rz)*np.cos(ry), np.sin(rz)*np.sin(ry)*np.sin(rx) + np.cos(rz)*np.cos(rx), np.sin(rz)*np.sin(ry)*np.cos(rx) - np.cos(rz)*np.sin(rx)],
-                        [-np.sin(ry), np.cos(ry)*np.sin(rx), np.cos(ry)*np.cos(rx)],
+                        [c_z*c_y, c_z*s_y*s_x - s_z*c_x, c_z*s_y*c_x + s_z*s_x],
+                        [s_z*c_y, s_z*s_y*s_x + c_z*c_x, s_z*s_y*c_x - c_z*s_x],
+                        [-s_y, c_y*s_x, c_y*c_x],
                     ])
                     T = np.array([[t1, t2, t3]]).T.astype('float32')
                     Rinv = np.linalg.inv(R).astype('float32')
