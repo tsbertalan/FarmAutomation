@@ -78,7 +78,7 @@ class GameWatcher:
 		self.d3d = d3dshot.create(capture_output="numpy")
 		self.window_handle = get_hwnd()
 		self.shell = win32com.client.Dispatch("WScript.Shell")
-		self.savegame_id = 2
+		self.savegame_id = 1
 		
 	def type_text(self, cmd):
 		self.shell.SendKeys(cmd)
