@@ -1069,13 +1069,13 @@ class DepthGetter:
                             sensor_dims=sensor_dims_,
                         ))
 
+                    # Precompute RKuv
+                    RKuv = Rinv @ Kinvp
+                    self.pinhole_information['RKuv'] = RKuv
+
                 # Get the 3d position.
-                # shape is [3, 282624]
-                # cam_coords = self.pinhole_information['K_inv_pixel_coords'] * depth_m_gpu.flatten()
-                cam_coords = self.pinhole_information['K_inv_pixel_coords'] * depth_m_cpu_segshape.flatten()
-                # Apply the rotation and translation.
-                xyz_untranslated = self.pinhole_information['Rinv'] @ cam_coords
-                xyz = xyz_untranslated + self.pinhole_information['T']
+                # shape is [3, a few thousand]
+                xyz = self.pinhole_information['RKuv'] * depth_m_cpu_segshape.flatten() + self.pinhole_information['T']
 
                 with MeasureElapsed(self.report_info, '  depth projection plot'):
                     xyz_cpu = xyz#.to('cpu').numpy()
