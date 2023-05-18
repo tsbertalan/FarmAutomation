@@ -47,16 +47,16 @@ function TelemRecSpec:onEnterVehicle(isControlling, playerStyle, farmId, playerI
 end
 
 function TelemRecSpec:onUpdate(dt)
-	for i, component in pairs(self.components) do
-		local vx, vy, vz = getLinearVelocity(component.node)
-		local velx, vely, velz = getAngularVelocity(component.node)
-		-- print("Telemetry vehicle velocity is  ".. tostring(vx) .. ", " .. tostring(vy) .. ", " .. tostring(vz))
-		-- print("Telemetry vehicle angular velocity is  ".. tostring(velx) .. ", " .. tostring(vely) .. ", " .. tostring(velz))
-		local PosX, PosY, PosZ = getWorldTranslation(component.node)
-		local quatX, quatY, quatZ, quatW = getWorldQuaternion(component.node)
-		-- print("Telemetry vehicle rotation is  ".. tostring(quatX) .. ", " .. tostring(quatY) .. ", " .. tostring(quatZ) .. ", " .. tostring(quatW))
-		-- print("Telemetry vehicle position is  ".. tostring(PosX) .. ", " .. tostring(PosY) .. ", " .. tostring(PosZ))
-		local torque = getMotorTorque(component.node)
-		-- print("Telemetry vehicle torque is  ".. tostring(torque))
-	end
+	-- for i, component in pairs(self.components) do
+	-- 	local vx, vy, vz = getLinearVelocity(component.node)
+	-- 	local velx, vely, velz = getAngularVelocity(component.node)
+	-- 	-- print("Telemetry vehicle velocity is  ".. tostring(vx) .. ", " .. tostring(vy) .. ", " .. tostring(vz))
+	-- 	-- print("Telemetry vehicle angular velocity is  ".. tostring(velx) .. ", " .. tostring(vely) .. ", " .. tostring(velz))
+	-- 	local PosX, PosY, PosZ = getWorldTranslation(component.node)
+	-- 	local quatX, quatY, quatZ, quatW = getWorldQuaternion(component.node)
+	-- 	-- print("Telemetry vehicle rotation is  ".. tostring(quatX) .. ", " .. tostring(quatY) .. ", " .. tostring(quatZ) .. ", " .. tostring(quatW))
+	-- 	-- print("Telemetry vehicle position is  ".. tostring(PosX) .. ", " .. tostring(PosY) .. ", " .. tostring(PosZ))
+	-- 	local torque = getMotorTorque(component.node)
+	-- 	-- print("Telemetry vehicle torque is  ".. tostring(torque))
+	-- end
 end
