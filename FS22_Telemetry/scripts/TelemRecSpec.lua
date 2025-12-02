@@ -32,13 +32,13 @@ function TelemRecSpec.registerEventListeners(vehicleType)
 end
 
 function TelemRecSpec:onPreLoad(savegame)
-	print("TelemRecSpec:onPreLoad function in vehicle")
+	-- print("TelemRecSpec:onPreLoad function in vehicle")
 end
 
 function TelemRecSpec:onLoad(savegame)
 	self.spec_TelemRecSpec = self["spec_" .. TelemRecSpec.MOD_NAME .. ".TelemRecSpec"]
 
-	print("self.spec_TelemRecSpec " .. tostring(self.spec_TelemRecSpec))
+	-- print("self.spec_TelemRecSpec " .. tostring(self.spec_TelemRecSpec))
 end
 
 function TelemRecSpec:onEnterVehicle(isControlling, playerStyle, farmId, playerIndex)
