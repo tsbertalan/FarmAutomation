@@ -1,0 +1,10 @@
+- [ ] AC4 Ship Dispatcher @Projects-Robotics-AC4_Ship_Dispatcher @PID_2200010673
+  - [ ] Make a better text&\#47;nottext classifier.
+      - [ ] Create a dataset-take pictures of a few menu screens option areas, expansively defined. #Next
+      - [ ] Manually label image rows as text or not text, selected or not selected.
+      - [ ] Design a multi-objective classifier network.
+      - [ ] Train the network and tar it up.
+      - [ ] Integrate the trained classifier in place of the simple std thresholder.
+  - [ ] Reduce danger levels of assigned locations.
+  - [ ] Dispatch ships.
+  - [ ] Do segmentation for drivable space.

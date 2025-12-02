@@ -77,10 +77,15 @@ Next I'll need to ...
     - [x] Add a keyboard shortcut to toggle recording on the current vehicle
         - Maybe I won't keep this, but being able to use some keyboard shortcuts could be very useful.
     - [x] Add a "specialization" for all vehicles.
-- [ ] Add a global recorder object.
 - [x] find some additional useful data (such as pose, motor rpm, gear, torque, ...)
+- [ ] Read FS19 ROS code and consider adapting it.
+- [ ] Add a global recorder object.
 - [ ] Consider using sockets or some genuine pub-sub framework instead of a CSV dump.
 - [ ] Get data
 - [ ] Train predictive ODE model
 - [ ] Do MPC and other [[tasks for BDAI jobs]]
 - [ ] Write up experiments as blog posts.
+
+## References
+- [[Links on the basics of Farm Simulator modding]]
+- [[python 3d and farm simulator multiple camera views.urllist]]
