@@ -408,7 +408,7 @@ class Config(SimpleNamespace):
 
 class DepthGetter:
 
-    def __init__(self, vehicle_settings='mercedes_urban_truck', sshot_method='dxcam', 
+    def __init__(self, vehicle_settings='mercedes_urban_truck', sshot_method='d3dshot', 
                  CUDAmodels=True, semantic_annotation_method='fast',
                  input_alpha=1.0,
                  depth_alpha=0.6,
