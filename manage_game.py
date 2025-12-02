@@ -21,8 +21,11 @@ def clear_log():
 	if clear_log:
 		logfile = os.path.join(DESTDIR, 'log.txt')
 		print("Clearing", logfile)
-		with open(logfile, 'w') as f:
-			f.write('')
+		try:
+			with open(logfile, 'w') as f:
+				f.write('')
+		except PermissionError:
+			print("Failed to clear log file. Is the game running?")
 
 
 def install():
